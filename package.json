@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Zero-dependency browser quantitative research, indicator strategy builder, WebAssembly backtester, forecaster, and paper trading terminal.",
   "scripts": {
+    "build": "npm run build:wasm",
     "build:wasm": "asc wasm/engine.ts --config asconfig.json",
     "dev": "node server.mjs",
     "start": "npm run build:wasm && node server.mjs",
