@@ -20,6 +20,10 @@ Zero-runtime-dependency browser quantitative research, multi-strategy consensus,
   - **Two Zero-Lookahead Meta-Ensembles:** *All-Strategy Consensus (Equal Weight)* and *Rolling OOS Sharpe Ensemble* (20-bar strictly causal trailing rebalance with 60-bar warmup).
 - **Strictly Causal Backtester, 2D Sweep, Monte Carlo & Forecast Lab:**
   - Next-bar Open execution, exact entry + exit commission accounting, held-out final **30% Out-of-Sample (OOS)** split metrics, 196-grid Sharpe heatmap, portfolio-scaled 1,000-path Monte Carlo bootstrap, and frozen-origin causal Walk-Forward Kalman + Regularized Logistic/Ridge forecasting.
+- **Interactive Live-Chart Paper Trading Simulator (`Simulator` tab):**
+  - Full Terminal-grade candlestick chart, indicator overlays, causal Forecast Cone, Consensus Ribbon, and 24-Strategy Agreement Matrix rendered strictly on revealed bars `[0..cursor]` with zero look-ahead.
+  - **Co-Pilot Auto-Pause Prompts:** Simulation automatically pauses on your chosen trigger (*Signal Shift*, *Strong Buy/Sell Only*, *≥70% Consensus*, *Actionable Entry/Exit*, or *Manual Only*), surfaces the top indicator drivers, and lets you **Accept**, **Trade Custom Size**, or **Ignore & Continue**.
+  - **Granular Time & Step Controls:** Intraday (`5m`, `15m`, `1h`) and multi-year (`1D`, `2Y`) presets, timeline scrubber, **Random Blind Start**, `Space` Play/Pause, `→` `+1 Bar`, `+5`, `+1h/+1d/+1w`, **`⏭ Next Prompt`** fast-forward, `Instant Close` vs `Next-Bar Open` execution, Stop-Loss / Take-Profit brackets, chart fill diamonds + entry/SL/TP reference lines, and live **You vs. Armed Strategy vs. Buy & Hold** scoreboard.
 - **Paper Desk & Causal Market Replay:**
   - Persistent `$100k` portfolio, Market/Limit/Stop orders, bar-by-bar serialized causal Market Replay (next-bar Open auto-fills + causal tournament consensus), and optional **Alpaca Markets BYOK** (`<1s` IEX WebSocket + Paper API order mirroring with explicit broker status reporting).
 

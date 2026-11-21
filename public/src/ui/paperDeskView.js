@@ -23,6 +23,7 @@ export function renderPaperDeskView(container, {
   onSaveSettings,
   onToggleLiveStream,
   onSelectTopStrategy,
+  onOpenSimulator,
 }) {
   const settings = loadDataSettings();
   const priceMap = { [symbol]: currentPrice };
@@ -185,7 +186,10 @@ export function renderPaperDeskView(container, {
         <div class="card">
           <div class="section-mini-head">
             <span>CAUSAL MARKET REPLAY (NEXT-BAR OPEN FILLS)</span>
-            <span class="mono ${replayState.active ? "pos" : "muted"}">${replayState.active ? `BAR ${replayState.cursor}/${replayState.total}` : "READY"}</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button class="btn-ghost-xs" id="openChartSimBtn" style="border-color:rgba(56,189,248,0.4);color:#7dd3fc">▶ Live-Chart Simulator →</button>
+              <span class="mono ${replayState.active ? "pos" : "muted"}">${replayState.active ? `BAR ${replayState.cursor}/${replayState.total}` : "READY"}</span>
+            </div>
           </div>
           <p class="muted-sm" style="margin:0 0 10px">
             Step bar-by-bar through historical data with strict causal consensus &amp; next-bar open auto-execution matching the WASM backtester.
@@ -336,5 +340,6 @@ export function renderPaperDeskView(container, {
     saveDataSettings(next);
     onSaveSettings?.(next);
   });
+  container.querySelector("#openChartSimBtn")?.addEventListener("click", () => onOpenSimulator?.());
   container.querySelector("#toggleWsBtn")?.addEventListener("click", () => onToggleLiveStream?.());
 }

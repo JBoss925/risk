@@ -9,6 +9,7 @@ import {
 } from "./data/strategies.js";
 import { fetchMarketData, searchSymbols, getBarsPerYear, loadDataSettings, AlpacaLiveStream } from "./data/marketData.js";
 import { PaperPortfolio } from "./data/paperStore.js";
+import { SimSession } from "./data/simEngine.js";
 import { RiskEngineClient } from "./engine/engineClient.js";
 import { QuantChartCanvas } from "./ui/chartCanvas.js";
 import { renderDecisionPanel } from "./ui/decisionPanel.js";
@@ -17,6 +18,7 @@ import { renderStrategyArenaView, openStrategyCreatorModal } from "./ui/strategy
 import { renderBacktestView } from "./ui/backtestView.js";
 import { renderForecastView } from "./ui/forecastView.js";
 import { renderPaperDeskView } from "./ui/paperDeskView.js";
+import { renderSimulatorDeck, renderSimulatorRail } from "./ui/simulatorView.js";
 import { computeConsensusSummary, fmtFixed } from "./ui/format.js";
 
 function esc(s) {
@@ -30,7 +32,7 @@ function parseHashState() {
   const [viewPart, queryPart] = raw.split("?");
   const params = new URLSearchParams(queryPart || "");
   return {
-    view: ["terminal", "arena", "backtest", "forecast", "paper"].includes(viewPart) ? viewPart : null,
+    view: ["terminal", "arena", "backtest", "forecast", "simulator", "paper"].includes(viewPart) ? viewPart : null,
     symbol: params.get("sym")?.toUpperCase() || null,
     strat: params.get("strat") || null,
     pane: params.get("pane") || null,
@@ -95,11 +97,28 @@ const state = {
     timer: null,
     pendingAutoOrder: null, // { side: 'buy'|'sell', stratName } queued at bar t close -> fills bar t+1 OPEN
   },
+  // Interactive Live-Chart Paper Trading Simulator state
+  sim: {
+    seriesKey: "",
+    cursor: 0,
+    playing: false,
+    busy: false,
+    fastForwarding: false,
+    speedMs: 700,
+    timer: null,
+    sizePct: 25,
+    stopLossPct: 0,
+    takeProfitPct: 0,
+    railTab: "indicators", // 'indicators' | 'journal' | 'edit'
+    activePrompt: null,
+    hoverIdx: -1,
+  },
   alpacaStatus: "idle",
 };
 
 const engine = new RiskEngineClient();
 const portfolio = new PaperPortfolio();
+const sim = new SimSession({ startingCash: 100000, feeBps: 1, slippageBps: 2, allowShort: false });
 const alpacaStream = new AlpacaLiveStream({
   onStatus: (st) => {
     state.alpacaStatus = st;
@@ -118,6 +137,7 @@ const quoteName = $("quoteName");
 const wasmBadge = $("wasmBadge");
 const sourceBadge = $("sourceBadge");
 const subPaneSelect = $("subPaneSelect");
+const simSubPaneSelect = $("simSubPaneSelect");
 const strategySwitcherBtn = $("strategySwitcherBtn");
 const strategySwitcherPopover = $("strategySwitcherPopover");
 const switcherLabel = $("switcherLabel");
@@ -137,7 +157,21 @@ const chart = new QuantChartCanvas($("mainChartCanvas"), {
   },
 });
 
-if (urlInit.pane) chart.setOptions({ subPaneMode: urlInit.pane });
+const simChart = new QuantChartCanvas($("simChartCanvas"), {
+  onHoverBar: (idx) => {
+    state.sim.hoverIdx = idx;
+    renderSimRailOnly();
+  },
+  onSelectStrategy: (id) => {
+    selectStrategy(id);
+    toast(`Switched to ${state.activeStrategyName}`);
+  },
+});
+
+if (urlInit.pane) {
+  chart.setOptions({ subPaneMode: urlInit.pane });
+  simChart.setOptions({ subPaneMode: urlInit.pane });
+}
 
 function isEnsembleStrategy(id) {
   return id === "__consensus_equal__" || id === "__consensus_sharpe__";
@@ -331,24 +365,32 @@ function syncGlobalStrategyBar() {
 }
 
 function syncSubPaneOptions() {
-  const current = chart.subPaneMode || subPaneSelect.value;
   const oscRules = isEnsembleStrategy(state.activeStrategyId)
     ? []
     : state.rules.filter((r) => {
         const m = INDICATOR_BY_ID.get(r.indicatorId);
         return r.enabled && m && m.placement === "oscillator";
       });
-  subPaneSelect.innerHTML =
+  const html =
     `<option value="matrix">Strategy Agreement Matrix (${allStrategies.length}×Time)</option>` +
     `<option value="consensus">Multi-Strategy Consensus (% Agree)</option>` +
     `<option value="compare">Pinned Strategies Overlay (${state.pinnedIds.length})</option>` +
     `<option value="score">Active Strategy Conviction</option>` +
     oscRules.map((r) => `<option value="${r.uid}">${INDICATOR_BY_ID.get(r.indicatorId).name}</option>`).join("");
-  if ([...subPaneSelect.options].some((o) => o.value === current)) {
-    subPaneSelect.value = current;
-  } else {
-    subPaneSelect.value = "matrix";
-    chart.setOptions({ subPaneMode: "matrix" });
+
+  for (const [sel, targetChart] of [
+    [subPaneSelect, chart],
+    [simSubPaneSelect, simChart],
+  ]) {
+    if (!sel) continue;
+    const current = targetChart.subPaneMode || sel.value;
+    sel.innerHTML = html;
+    if ([...sel.options].some((o) => o.value === current)) {
+      sel.value = current;
+    } else {
+      sel.value = "matrix";
+      targetChart.setOptions({ subPaneMode: "matrix" });
+    }
   }
 }
 
@@ -382,6 +424,7 @@ function togglePinStrategy(id) {
   syncGlobalStrategyBar();
   syncSubPaneOptions();
   chart.setData({ comparedStrategies: getComparedStrategiesData() });
+  if (state.view === "simulator") simChart.setData({ comparedStrategies: getComparedStrategiesData() });
   if (state.view === "arena" || state.view === "backtest") renderActiveView();
   renderSwitcherPopover();
 }
@@ -533,7 +576,7 @@ async function runEvaluation({ runSweep = false, runMc = false, resetChartView =
     syncSubPaneOptions();
     syncGlobalStrategyBar();
 
-    chart.setData({
+    const chartPayload = {
       bars: state.bars,
       interval: state.interval,
       activeStrategyId: state.activeStrategyId,
@@ -548,10 +591,18 @@ async function runEvaluation({ runSweep = false, runMc = false, resetChartView =
       comparedStrategies: getComparedStrategiesData(),
       thresholds: state.thresholds,
       resetView: resetChartView,
-    });
+    };
 
-    renderDecisionOnly();
-    if (state.view !== "terminal") renderActiveView();
+    if (state.view === "simulator") {
+      simChart.setData({ ...chartPayload, simFills: sim.fills, simPosition: sim.position, followRight: !resetChartView });
+      renderSimDeckOnly();
+      renderSimRailOnly();
+      renderSimComposer();
+    } else {
+      chart.setData(chartPayload);
+      renderDecisionOnly();
+      if (state.view !== "terminal") renderActiveView();
+    }
   } catch (err) {
     console.error(err);
     toast(`Engine error: ${err.message}`, "err");
@@ -585,7 +636,7 @@ function renderDecisionOnly() {
         if (state.view === "paper") renderActiveView();
       } catch (e) { toast(e.message, "err"); }
     },
-    onOpenArena: () => { state.view = "arena"; syncUrlHash(); renderActiveView(); },
+    onOpenArena: () => switchView("arena"),
     onSwitchStrategy: (id) => selectStrategy(id),
     onChangeRailTab: (tab) => {
       state.railTab = tab;
@@ -596,8 +647,7 @@ function renderDecisionOnly() {
 }
 
 function renderComposer() {
-  renderStrategyBuilder($("strategyBuilderContainer"), {
-    visible: state.railTab === "edit",
+  const commonProps = {
     activeStrategyId: state.activeStrategyId,
     allStrategies,
     isEnsembleMode: isEnsembleStrategy(state.activeStrategyId),
@@ -650,8 +700,15 @@ function renderComposer() {
         rules: state.rules,
       });
     },
-    onOpenArena: () => { state.view = "arena"; syncUrlHash(); renderActiveView(); },
-  });
+    onOpenArena: () => switchView("arena"),
+  };
+
+  renderStrategyBuilder($("strategyBuilderContainer"), { ...commonProps, visible: state.railTab === "edit" });
+  renderStrategyBuilder($("simBuilderContainer"), { ...commonProps, visible: state.sim.railTab === "edit" });
+}
+
+function renderSimComposer() {
+  renderComposer();
 }
 
 function renderActiveView() {
@@ -746,7 +803,7 @@ function renderActiveView() {
         runEvaluation();
         toast(`Applied Buy ≥ ${buy} / Sell ≤ ${sell}`);
       },
-      onSendToPaper: () => { state.view = "paper"; renderActiveView(); },
+      onSendToPaper: () => switchView("paper"),
     });
   } else if (state.view === "forecast") {
     const activeScore = state.evalResult?.score?.at(-1) ?? 0;
@@ -759,7 +816,7 @@ function renderActiveView() {
       forecast: state.evalResult?.forecast,
       forecastCfg: state.forecastCfg,
       onUpdateForecastCfg: (next) => { state.forecastCfg = next; runEvaluation(); },
-      onSendToPaper: () => { state.view = "paper"; renderActiveView(); },
+      onSendToPaper: () => switchView("paper"),
     });
   } else if (state.view === "paper") {
     const currentPrice = state.bars.length ? state.bars[state.bars.length - 1].c : 0;
@@ -821,8 +878,349 @@ function renderActiveView() {
         }
       },
       onSelectTopStrategy: (id) => { selectStrategy(id, "paper"); toast(`Armed Paper Desk with ${state.activeStrategyName}`); },
+      onOpenSimulator: () => switchView("simulator"),
     });
+  } else if (state.view === "simulator") {
+    renderSimDeckOnly();
+    renderSimRailOnly();
+    renderSimComposer();
+    requestAnimationFrame(() => simChart.render());
   }
+}
+
+// ---- View Switching (Keeps Simulator Strictly Isolated from Live Data Tabs!) ----
+async function switchView(nextView) {
+  if (nextView === state.view) return;
+  const wasSim = state.view === "simulator";
+  if (wasSim) {
+    stopSimPlayback();
+  }
+  state.view = nextView;
+  renderActiveView();
+
+  if (wasSim && nextView !== "simulator" && state.fullBars.length) {
+    state.bars = state.fullBars;
+    restoreLiveSourceBadge();
+    updateQuoteStrip();
+    await engine.loadBars(state.bars);
+    await runTournament();
+    await runEvaluation({ resetChartView: false });
+  } else if (nextView === "simulator" && state.fullBars.length) {
+    stopReplay(false);
+    await ensureSimulatorInitialized({ resetView: true });
+  }
+}
+
+// ---- Interactive Live-Chart Paper Trading Simulator Engine ----
+function getSimMinCursor(total) {
+  return Math.min(total, Math.max(45, Math.min(70, Math.floor(total * 0.25))));
+}
+
+function stopSimPlayback() {
+  if (state.sim.timer) { clearInterval(state.sim.timer); state.sim.timer = null; }
+  state.sim.playing = false;
+  state.sim.fastForwarding = false;
+}
+
+async function resetSimAtCursor(cursor, { resetView = true } = {}) {
+  stopSimPlayback();
+  const total = state.fullBars.length;
+  if (!total) return;
+  const minC = getSimMinCursor(total);
+  const clamped = Math.min(total, Math.max(minC, Math.floor(cursor)));
+  state.sim.cursor = clamped;
+  state.sim.seriesKey = `${state.symbol}:${state.interval}:${state.range}:${total}`;
+  state.sim.activePrompt = null;
+  state.sim.hoverIdx = -1;
+  sim.reset(100000, clamped, state.fullBars[clamped - 1].c);
+  await syncSimulatorBar({ evaluatePrompt: true, resetView, followRight: true });
+}
+
+async function ensureSimulatorInitialized({ resetView = true } = {}) {
+  const total = state.fullBars.length;
+  if (!total) return;
+  const key = `${state.symbol}:${state.interval}:${state.range}:${total}`;
+  if (state.sim.seriesKey !== key || state.sim.cursor < getSimMinCursor(total) || state.sim.cursor > total) {
+    const defaultStart = Math.max(getSimMinCursor(total), Math.floor(total * 0.6));
+    await resetSimAtCursor(defaultStart, { resetView });
+  } else {
+    await syncSimulatorBar({ evaluatePrompt: false, resetView, followRight: true });
+  }
+}
+
+async function syncSimulatorBar({ evaluatePrompt = true, resetView = false, followRight = true } = {}) {
+  if (!state.fullBars.length) return;
+  const total = state.fullBars.length;
+  const cursor = Math.min(total, Math.max(1, state.sim.cursor));
+  state.bars = state.fullBars.slice(0, cursor);
+  updateSourceBadge(`SIMULATOR · BAR ${cursor}/${total}`, true);
+  updateQuoteStrip();
+
+  await engine.loadBars(state.bars);
+  await runTournament();
+  await runEvaluation({ resetChartView: resetView });
+
+  if (evaluatePrompt && state.evalResult?.score?.length) {
+    const barIdx = cursor - 1;
+    const sc = state.evalResult.score[barIdx] ?? 0;
+    const prompt = sim.evaluateBarSignal({
+      barIdx,
+      bar: state.bars[barIdx],
+      score: sc,
+      thresholds: state.thresholds,
+      tournamentStrategies: state.tournament?.strategies || [],
+      ruleResults: state.evalResult.ruleResults || [],
+      rules: state.rules,
+    });
+    if (prompt) {
+      state.sim.activePrompt = prompt;
+      stopSimPlayback();
+      toast(`⏸ Co-Pilot paused: ${prompt.headline}`);
+    }
+  }
+
+  simChart.setData({
+    bars: state.bars,
+    interval: state.interval,
+    activeStrategyId: state.activeStrategyId,
+    activeStrategyName: state.activeStrategyName,
+    rules: isEnsembleStrategy(state.activeStrategyId) ? [] : state.rules,
+    ruleResults: state.evalResult?.ruleResults || [],
+    score: state.evalResult?.score || [],
+    trades: state.evalResult?.backtest?.trades || [],
+    forecast: state.evalResult?.forecast || null,
+    consensus: state.tournament?.consensus || null,
+    tournamentStrategies: state.tournament?.strategies || [],
+    comparedStrategies: getComparedStrategiesData(),
+    simFills: sim.fills,
+    simPosition: sim.position,
+    thresholds: state.thresholds,
+    resetView,
+    followRight,
+  });
+
+  renderSimDeckOnly();
+  renderSimRailOnly();
+}
+
+async function advanceSimBars(count = 1) {
+  if (state.view !== "simulator" || state.sim.busy || !state.fullBars.length) return;
+  state.sim.busy = true;
+  state.sim.activePrompt = null;
+  try {
+    for (let step = 0; step < count; step++) {
+      if (state.sim.cursor >= state.fullBars.length) {
+        stopSimPlayback();
+        toast("Simulator reached latest historical bar");
+        renderSimDeckOnly();
+        break;
+      }
+      state.sim.cursor++;
+      const barIdx = state.sim.cursor - 1;
+      const newBar = state.fullBars[barIdx];
+      const events = sim.processNewBarOpenAndBrackets(newBar, barIdx);
+      let bracketTriggered = false;
+      for (const ev of events) {
+        if (ev.type === "stop_loss" || ev.type === "take_profit") {
+          bracketTriggered = true;
+          stopSimPlayback();
+          toast(`${ev.type === "stop_loss" ? "🛑 STOP LOSS" : "🎯 TAKE PROFIT"} filled @ $${ev.fill.price.toFixed(2)}`, ev.type === "stop_loss" ? "err" : "ok");
+        } else if (ev.type === "queued_fill") {
+          toast(`Next-Open filled ${ev.fill.side.toUpperCase()} ${ev.fill.qty.toFixed(2)} @ $${ev.fill.price.toFixed(2)}`);
+        } else if (ev.type === "queued_error") {
+          toast(ev.message, "err");
+        }
+      }
+
+      await syncSimulatorBar({ evaluatePrompt: true, resetView: false, followRight: true });
+      if (state.sim.activePrompt || bracketTriggered) break;
+    }
+  } finally {
+    state.sim.busy = false;
+    renderSimDeckOnly();
+  }
+}
+
+function toggleSimPlayback() {
+  if (state.sim.playing || state.sim.fastForwarding) {
+    stopSimPlayback();
+    renderSimDeckOnly();
+    return;
+  }
+  if (state.sim.cursor >= state.fullBars.length) {
+    toast("Already at latest bar — scrub or click Random to restart", "err");
+    return;
+  }
+  state.sim.activePrompt = null;
+  state.sim.playing = true;
+  renderSimDeckOnly();
+  advanceSimBars(1);
+  state.sim.timer = setInterval(() => {
+    if (state.sim.playing && !state.sim.busy) advanceSimBars(1);
+  }, state.sim.speedMs);
+}
+
+async function fastForwardToNextPrompt() {
+  if (state.sim.fastForwarding) {
+    stopSimPlayback();
+    renderSimDeckOnly();
+    return;
+  }
+  if (sim.pauseMode === "manual") {
+    toast("Select a Co-Pilot Pause Mode (not Manual Only) to jump to next prompt", "err");
+    return;
+  }
+  stopSimPlayback();
+  state.sim.activePrompt = null;
+  state.sim.playing = true;
+  state.sim.fastForwarding = true;
+  renderSimDeckOnly();
+
+  while (state.sim.fastForwarding && state.view === "simulator" && state.sim.cursor < state.fullBars.length) {
+    await advanceSimBars(1);
+    if (state.sim.activePrompt || !state.sim.playing) break;
+    await new Promise((r) => setTimeout(r, 12));
+  }
+  stopSimPlayback();
+  renderSimDeckOnly();
+}
+
+function handleSimUserTrade(side, reason = "manual") {
+  if (!state.bars.length) return;
+  const barIdx = state.bars.length - 1;
+  const bar = state.bars[barIdx];
+  try {
+    const res = sim.submitUserAction({
+      side,
+      pct: state.sim.sizePct,
+      price: bar.c,
+      barIdx,
+      time: bar.t,
+      reason,
+      stopLossPct: state.sim.stopLossPct,
+      takeProfitPct: state.sim.takeProfitPct,
+    });
+    if (!res) { toast("No open position to flatten", "err"); return; }
+    if (res.queued) {
+      toast(`Queued ${res.order.side.toUpperCase()} ${res.order.shares.toFixed(2)} @ Next Bar Open`);
+    } else {
+      toast(`SIM ${res.side.toUpperCase()} ${res.qty.toFixed(2)} ${state.symbol} @ $${res.price.toFixed(2)}`);
+    }
+    state.sim.activePrompt = null;
+    simChart.setData({ simFills: sim.fills, simPosition: sim.position });
+    renderSimRailOnly();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+function renderSimDeckOnly() {
+  renderSimulatorDeck($("simDeckContainer"), {
+    sim,
+    simState: state.sim,
+    fullBars: state.fullBars,
+    interval: state.interval,
+    range: state.range,
+    onPlayToggle: toggleSimPlayback,
+    onStep: (n) => { stopSimPlayback(); advanceSimBars(n); },
+    onNextPrompt: fastForwardToNextPrompt,
+    onSpeedChange: (ms) => {
+      state.sim.speedMs = ms;
+      if (state.sim.playing && !state.sim.fastForwarding) {
+        clearInterval(state.sim.timer);
+        state.sim.timer = setInterval(() => { if (state.sim.playing && !state.sim.busy) advanceSimBars(1); }, state.sim.speedMs);
+      }
+    },
+    onScrubStart: (cursor) => {
+      resetSimAtCursor(cursor, { resetView: true }).then(() => toast(`Restarted Simulator at Bar ${cursor}/${state.fullBars.length}`));
+    },
+    onRandomStart: () => {
+      const total = state.fullBars.length;
+      const minC = getSimMinCursor(total);
+      const maxC = Math.max(minC, total - Math.min(25, Math.floor(total * 0.15)));
+      const randC = minC + Math.floor(Math.random() * Math.max(1, maxC - minC));
+      resetSimAtCursor(randC, { resetView: true }).then(() => toast(`Blind practice session started at Bar ${randC}/${total}`));
+    },
+    onResetSim: () => {
+      const anchor = sim.startCursor || state.sim.cursor;
+      resetSimAtCursor(anchor, { resetView: false }).then(() => toast("Simulator wallet reset to $100,000"));
+    },
+    onSelectPreset: (preset) => {
+      state.interval = preset.interval;
+      state.range = preset.range;
+      $("intervalGroup").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.interval === preset.interval));
+      $("rangeGroup").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.range === preset.range));
+      loadSymbol(state.symbol);
+    },
+    onPauseModeChange: (mode) => {
+      sim.pauseMode = mode;
+      renderSimDeckOnly();
+    },
+    onFillModeChange: (mode) => {
+      sim.fillMode = mode;
+      renderSimDeckOnly();
+      renderSimRailOnly();
+    },
+  });
+}
+
+function renderSimRailOnly() {
+  renderSimulatorRail($("simRailContainer"), {
+    symbol: state.symbol,
+    interval: state.interval,
+    activeStrategyName: state.activeStrategyName,
+    isEnsembleMode: isEnsembleStrategy(state.activeStrategyId),
+    sim,
+    simState: state.sim,
+    bars: state.bars,
+    activeIdx: state.sim.hoverIdx,
+    rules: state.rules,
+    ruleResults: state.evalResult?.ruleResults || [],
+    score: state.evalResult?.score || [],
+    thresholds: state.thresholds,
+    forecast: state.evalResult?.forecast || null,
+    tournament: state.tournament,
+    onUserTrade: (side) => handleSimUserTrade(side, "manual"),
+    onCancelPending: () => { sim.pendingOrder = null; renderSimRailOnly(); toast("Cancelled pending Next-Open order"); },
+    onPromptAccept: () => {
+      const p = state.sim.activePrompt;
+      if (!p) return;
+      sim.recordDecision({ barIdx: p.barIdx, time: p.time, action: p.kind, promptReason: p.headline, stratLabel: p.rating.label, price: p.price });
+      if (p.kind === "buy") {
+        handleSimUserTrade("buy", "co-pilot accept");
+      } else if (sim.position && sim.position.qty > 0) {
+        handleSimUserTrade("flatten", "co-pilot exit");
+      } else if (sim.allowShort) {
+        handleSimUserTrade("sell", "co-pilot short");
+      } else {
+        state.sim.activePrompt = null;
+        renderSimRailOnly();
+        toast("Accepted Co-Pilot signal (already flat)");
+      }
+    },
+    onPromptSkip: () => {
+      const p = state.sim.activePrompt;
+      if (p) {
+        sim.recordDecision({ barIdx: p.barIdx, time: p.time, action: "skip", promptReason: p.headline, stratLabel: p.rating.label, price: p.price });
+      }
+      state.sim.activePrompt = null;
+      renderSimRailOnly();
+      toggleSimPlayback();
+    },
+    onPromptDismiss: () => {
+      state.sim.activePrompt = null;
+      renderSimRailOnly();
+    },
+    onChangeSizePct: (pct) => { state.sim.sizePct = pct; renderSimRailOnly(); },
+    onUpdateBracket: (patch) => { Object.assign(state.sim, patch); },
+    onToggleAllowShort: (val) => { sim.allowShort = val; renderSimRailOnly(); },
+    onChangeRailTab: (tab) => {
+      state.sim.railTab = tab;
+      renderSimRailOnly();
+      renderSimComposer();
+    },
+    onSwitchStrategy: (id) => selectStrategy(id),
+  });
 }
 
 // ---- Market Data Loading ----
@@ -848,9 +1246,15 @@ async function loadSymbol(symbol, { forceRefresh = false } = {}) {
   if (data.warning) toast(data.warning, "err");
 
   updateQuoteStrip();
-  await engine.loadBars(state.bars);
-  await Promise.all([runTournament(), refreshIndicatorSnapshot()]);
-  await runEvaluation({ resetChartView: true });
+  if (state.view === "simulator") {
+    state.sim.seriesKey = "";
+    await ensureSimulatorInitialized({ resetView: true });
+    await refreshIndicatorSnapshot();
+  } else {
+    await engine.loadBars(state.bars);
+    await Promise.all([runTournament(), refreshIndicatorSnapshot()]);
+    await runEvaluation({ resetChartView: true });
+  }
 }
 
 async function handleLiveTick({ price, size, time }) {
@@ -1003,11 +1407,17 @@ document.addEventListener("click", (e) => {
 $("prevStratBtn").addEventListener("click", () => stepRankedStrategy(-1));
 $("nextStratBtn").addEventListener("click", () => stepRankedStrategy(1));
 $("globalNewStratBtn").addEventListener("click", () => openCreatorStudio());
-globalConsensusPill.addEventListener("click", () => { state.view = "arena"; renderActiveView(); });
-$("mobileConsensusBtn")?.addEventListener("click", () => { state.view = "arena"; renderActiveView(); });
+globalConsensusPill.addEventListener("click", () => switchView("arena"));
+$("mobileConsensusBtn")?.addEventListener("click", () => switchView("arena"));
 $("globalCompareBtn").addEventListener("click", () => {
-  state.view = "terminal";
-  renderActiveView();
+  if (state.view === "simulator") {
+    simSubPaneSelect.value = "compare";
+    simChart.setOptions({ subPaneMode: "compare" });
+    syncUrlHash();
+    toast(`Overlaying Active + ${state.pinnedIds.length} pinned strategies in Simulator`);
+    return;
+  }
+  switchView("terminal");
   subPaneSelect.value = "compare";
   chart.setOptions({ subPaneMode: "compare" });
   syncUrlHash();
@@ -1049,7 +1459,7 @@ tickerInput.addEventListener("keydown", (e) => {
 tickerInput.addEventListener("blur", () => setTimeout(() => tickerDropdown.classList.add("hidden"), 150));
 
 document.querySelectorAll(".nav-tab, .mob-tab").forEach((tab) => {
-  tab.addEventListener("click", () => { state.view = tab.dataset.view; renderActiveView(); });
+  tab.addEventListener("click", () => switchView(tab.dataset.view));
 });
 
 $("intervalGroup").querySelectorAll("button").forEach((btn) => {
@@ -1098,7 +1508,35 @@ subPaneSelect.addEventListener("change", () => {
 });
 $("resetZoomBtn").addEventListener("click", () => chart.resetZoom());
 
-// Global Keyboard Shortcuts (Escape closes modals/popovers, ⌘K opens switcher, [/] cycles strategies, 1..5 views, / ticker)
+// Simulator Chart Toolbar Controls
+$("simChartStyleGroup")?.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    $("simChartStyleGroup").querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    simChart.setOptions({ chartStyle: btn.dataset.style });
+  });
+});
+$("simToggleForecastBtn")?.addEventListener("click", (e) => {
+  const next = !simChart.showForecast;
+  e.currentTarget.classList.toggle("active", next);
+  simChart.setOptions({ showForecast: next });
+});
+$("simToggleSignalsBtn")?.addEventListener("click", (e) => {
+  const next = !simChart.showSignals;
+  e.currentTarget.classList.toggle("active", next);
+  simChart.setOptions({ showSignals: next });
+});
+$("simToggleHaloBtn")?.addEventListener("click", (e) => {
+  const next = !simChart.showConsensusHalo;
+  e.currentTarget.classList.toggle("active", next);
+  simChart.setOptions({ showConsensusHalo: next });
+});
+simSubPaneSelect?.addEventListener("change", () => {
+  simChart.setOptions({ subPaneMode: simSubPaneSelect.value });
+  syncUrlHash();
+});
+$("simResetZoomBtn")?.addEventListener("click", () => simChart.resetZoom());
+
+// Global Keyboard Shortcuts (Escape closes modals/popovers, ⌘K opens switcher, [/] cycles strategies, Space/→ in Simulator, 1..6 views, / ticker)
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     document.getElementById("indicatorCatalogModal")?.remove();
@@ -1113,14 +1551,19 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+  if (state.view === "simulator") {
+    if (e.key === " ") { e.preventDefault(); toggleSimPlayback(); return; }
+    if (e.key === "ArrowRight") { e.preventDefault(); stopSimPlayback(); advanceSimBars(1); return; }
+  }
   if (e.key === "/") { e.preventDefault(); tickerInput.focus(); tickerInput.select(); }
   else if (e.key === "[") stepRankedStrategy(-1);
   else if (e.key === "]") stepRankedStrategy(1);
-  else if (e.key === "1") { state.view = "terminal"; renderActiveView(); }
-  else if (e.key === "2") { state.view = "arena"; renderActiveView(); }
-  else if (e.key === "3") { state.view = "backtest"; renderActiveView(); }
-  else if (e.key === "4") { state.view = "forecast"; renderActiveView(); }
-  else if (e.key === "5") { state.view = "paper"; renderActiveView(); }
+  else if (e.key === "1") switchView("terminal");
+  else if (e.key === "2") switchView("arena");
+  else if (e.key === "3") switchView("backtest");
+  else if (e.key === "4") switchView("forecast");
+  else if (e.key === "5") switchView("simulator");
+  else if (e.key === "6") switchView("paper");
 });
 
 // ---- Bootstrap ----

@@ -70,6 +70,8 @@ export class QuantChartCanvas {
     this.consensus = null;
     this.tournamentStrategies = [];
     this.comparedStrategies = [];
+    this.simFills = [];
+    this.simPosition = null;
     this.thresholds = { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 };
 
     this.chartStyle = "candles";
@@ -107,8 +109,11 @@ export class QuantChartCanvas {
     consensus,
     tournamentStrategies,
     comparedStrategies,
+    simFills,
+    simPosition,
     thresholds,
     resetView = false,
+    followRight = false,
   }) {
     const prevLen = this.bars.length;
     if (bars) { this.bars = bars; this.haBars = computeHeikinAshi(bars); }
@@ -123,12 +128,16 @@ export class QuantChartCanvas {
     if (consensus !== undefined) this.consensus = consensus;
     if (tournamentStrategies !== undefined) this.tournamentStrategies = tournamentStrategies || [];
     if (comparedStrategies !== undefined) this.comparedStrategies = comparedStrategies || [];
+    if (simFills !== undefined) this.simFills = simFills || [];
+    if (simPosition !== undefined) this.simPosition = simPosition;
     if (thresholds) this.thresholds = thresholds;
 
     if (resetView || prevLen === 0 || this.viewStart >= this.bars.length) {
       const n = this.bars.length;
       this.viewCount = Math.min(Math.max(40, n), 140);
       this.viewStart = Math.max(0, n - this.viewCount);
+    } else if (followRight && this.bars.length > prevLen && this.viewStart + this.viewCount >= prevLen - 4) {
+      this.viewStart = Math.max(0, this.bars.length - this.viewCount);
     }
     this.render();
   }
@@ -513,6 +522,52 @@ export class QuantChartCanvas {
           ctx.strokeStyle = t.pnl >= 0 ? "#34d399" : "#fb7185"; ctx.lineWidth = 1.6;
           ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.stroke();
         }
+      }
+    }
+
+    // Interactive Simulator: Open Position Entry / SL / TP Lines + User Fill Diamond Markers
+    if (this.simPosition && Math.abs(this.simPosition.qty) > 1e-8) {
+      const drawRefLine = (val, color, label) => {
+        if (!Number.isFinite(val)) return;
+        const y = yOf(val);
+        if (y < mainTop + 4 || y > mainBot - 4) return;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.25;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = color;
+        ctx.font = "700 9px 'JetBrains Mono', ui-monospace, monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(`${label} $${fmtPrice(val)}`, padL + plotW - 6, y - 4);
+        ctx.restore();
+      };
+      drawRefLine(this.simPosition.avgPrice, "#38bdf8", this.simPosition.qty > 0 ? "YOUR LONG" : "YOUR SHORT");
+      drawRefLine(this.simPosition.stopLossPrice, "#fb7185", "SL");
+      drawRefLine(this.simPosition.takeProfitPrice, "#34d399", "TP");
+    }
+
+    if (this.simFills?.length) {
+      for (const f of this.simFills) {
+        if (f.barIdx < startIdx || f.barIdx > endIdx) continue;
+        const x = xOf(f.barIdx);
+        const y = yOf(f.price);
+        if (y < mainTop || y > mainBot) continue;
+        const isBuy = f.side === "buy";
+        ctx.save();
+        ctx.fillStyle = isBuy ? "#38bdf8" : "#f59e0b";
+        ctx.strokeStyle = "#080a0f";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(x, y - 6.5);
+        ctx.lineTo(x + 6.5, y);
+        ctx.lineTo(x, y + 6.5);
+        ctx.lineTo(x - 6.5, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       }
     }
 

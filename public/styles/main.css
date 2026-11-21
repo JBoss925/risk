@@ -530,6 +530,81 @@ input:disabled { opacity: 0.45; cursor: not-allowed; }
 .settings-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 
+/* Interactive Live-Chart Paper Trading Simulator */
+.sim-deck-container {
+  background: #0d111a;
+  border-bottom: 1px solid var(--border);
+  padding: 7px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sim-deck-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.sim-transport { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.sim-next-sig-btn { border-color: rgba(99, 102, 241, 0.45); color: #c7d2fe; background: rgba(99, 102, 241, 0.12); }
+.sim-next-sig-btn:hover { background: rgba(99, 102, 241, 0.24); }
+.sim-scrubber-wrap { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 140px; }
+.sim-scrubber-wrap input[type="range"] { flex: 1; min-width: 60px; accent-color: var(--cyan); height: 4px; cursor: pointer; }
+.sim-date-pill { font-size: var(--t-xs); font-weight: 700; padding: 3px 7px; border-radius: 6px; background: rgba(56, 189, 248, 0.12); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.28); white-space: nowrap; }
+.sim-deck-actions { display: flex; align-items: center; gap: 5px; }
+
+.sim-deck-sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 5px; border-top: 1px solid rgba(255, 255, 255, 0.045); }
+.sim-preset-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.sim-copilot-cfg { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+
+.sim-prompt-card {
+  background: linear-gradient(135deg, rgba(18, 25, 39, 0.98), rgba(14, 19, 31, 0.98));
+  border: 1.5px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 10px 28px rgba(0, 0, 0, 0.45);
+  animation: toastIn 0.2s ease-out;
+}
+.sim-prompt-card.tone-buy { border-color: rgba(16, 185, 129, 0.58); box-shadow: 0 0 22px rgba(16, 185, 129, 0.14); }
+.sim-prompt-card.tone-sell { border-color: rgba(244, 63, 94, 0.58); box-shadow: 0 0 22px rgba(244, 63, 94, 0.14); }
+.sim-prompt-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.sim-prompt-badge { font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; color: #fbbf24; }
+.sim-prompt-title { font-size: 14px; font-weight: 800; color: #f8fafc; margin-bottom: 3px; }
+.sim-driver-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+.sim-prompt-actions { display: grid; grid-template-columns: 1.25fr 1fr; gap: 7px; }
+
+.sim-trade-pad { padding: 11px; margin-bottom: 10px; }
+.sim-pos-strip {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 9px; border-radius: 8px; background: rgba(56, 189, 248, 0.07);
+  border: 1px solid rgba(56, 189, 248, 0.2); margin-bottom: 8px;
+}
+.sim-pos-strip.flat { background: rgba(255, 255, 255, 0.025); border-color: var(--border); }
+.sim-pending-chip {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 5px 8px; border-radius: 7px; margin-bottom: 8px; font-size: 10.5px;
+  background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d;
+}
+.sim-size-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.sim-bracket-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 9px; }
+.sim-bracket-row label { display: flex; flex-direction: column; gap: 3px; font-size: var(--t-xs); color: var(--text-muted); }
+.sim-bracket-row input {
+  background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 6px;
+  color: var(--text); padding: 4px 7px; font-size: var(--t-sm); width: 100%; outline: none;
+}
+.sim-trade-btns { display: grid; grid-template-columns: 1fr 1fr auto; gap: 7px; }
+
+.sim-scoreboard { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+.sim-score-tile {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 9px;
+  padding: 8px 9px; display: flex; flex-direction: column; gap: 2px;
+}
+.sim-score-tile.primary { border-color: rgba(56, 189, 248, 0.32); background: rgba(56, 189, 248, 0.05); }
+.sim-score-tile strong { font-size: 14px; font-weight: 700; }
+
+.sim-rail-tabs { grid-template-columns: repeat(3, 1fr); margin-bottom: 10px; }
+.sim-log-list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
+.sim-log-row { padding: 7px 8px; border-radius: 7px; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.045); }
+.sim-log-row.skip { opacity: 0.78; }
+.sim-log-top { display: flex; align-items: center; gap: 6px; font-size: var(--t-sm); }
+.sim-log-sub { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; margin-top: 3px; }
+
 .panel-empty, .panel-empty-sm { padding: 36px 20px; text-align: center; color: var(--text-muted); font-size: var(--t-md); }
 .panel-empty-sm { padding: 48px 16px; }
 
@@ -611,6 +686,7 @@ body:has(.modal-backdrop) .toast-root { opacity: 0; pointer-events: none; transi
   .switcher-label { max-width: 135px; }
 
   .chart-toolbar { padding: 6px 10px; gap: 5px; }
+  .sim-scrubber-wrap { flex-basis: 100%; }
   .chart-column { height: auto; min-height: 0; }
   .chart-stage { flex: none; height: 340px; min-height: 340px; }
   .toast-root { bottom: 62px; }
@@ -619,7 +695,7 @@ body:has(.modal-backdrop) .toast-root { opacity: 0; pointer-events: none; transi
 
   .mobile-bottom-nav {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     background: var(--bg-elevated);
     border-top: 1px solid var(--border);
     flex-shrink: 0;

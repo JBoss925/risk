@@ -66,6 +66,7 @@
           <button class="nav-tab" data-view="arena">Strategy Arena</button>
           <button class="nav-tab" data-view="backtest">Backtest &amp; Sweep</button>
           <button class="nav-tab" data-view="forecast">Forecast Lab</button>
+          <button class="nav-tab" data-view="simulator">Simulator</button>
           <button class="nav-tab" data-view="paper">Paper Desk</button>
         </nav>
 
@@ -194,7 +195,51 @@
           <div id="forecastViewContainer"></div>
         </section>
 
-        <!-- VIEW 5: PAPER DESK -->
+        <!-- VIEW 5: INTERACTIVE LIVE-CHART PAPER TRADING SIMULATOR -->
+        <section id="view-simulator" class="view-pane">
+          <div class="terminal-grid">
+            <div class="chart-column">
+              <div id="simDeckContainer" class="sim-deck-container"></div>
+
+              <div class="chart-toolbar">
+                <div class="chart-toolbar-group">
+                  <div class="segmented sm" id="simChartStyleGroup">
+                    <button data-style="candles" class="active">Candles</button>
+                    <button data-style="heikin">Heikin-Ashi</button>
+                    <button data-style="area">Area</button>
+                  </div>
+                  <button class="chip-toggle active" id="simToggleForecastBtn">Forecast Cone</button>
+                  <button class="chip-toggle active" id="simToggleSignalsBtn">Signals</button>
+                  <button class="chip-toggle active" id="simToggleHaloBtn" title="Subtle top regime ribbon when ≥65% of all strategies align">Consensus Ribbon</button>
+                </div>
+
+                <div class="chart-toolbar-group">
+                  <label class="subpane-picker">
+                    <span class="muted-sm">Lower Pane</span>
+                    <select id="simSubPaneSelect" class="mini-select">
+                      <option value="matrix">Strategy Agreement Matrix (24×Time)</option>
+                      <option value="consensus">Multi-Strategy Consensus (% Agree)</option>
+                      <option value="compare">Pinned Strategies Overlay</option>
+                      <option value="score">Active Strategy Conviction</option>
+                    </select>
+                  </label>
+                  <button class="btn-ghost-xs" id="simResetZoomBtn" title="Reset chart zoom (or double-click chart)">Reset</button>
+                </div>
+              </div>
+
+              <div class="chart-stage">
+                <canvas id="simChartCanvas"></canvas>
+              </div>
+            </div>
+
+            <aside class="right-rail">
+              <div id="simRailContainer"></div>
+              <div id="simBuilderContainer"></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- VIEW 6: PAPER DESK -->
         <section id="view-paper" class="view-pane">
           <div id="paperDeskViewContainer"></div>
         </section>
@@ -206,6 +251,7 @@
         <button class="mob-tab" data-view="arena">Arena</button>
         <button class="mob-tab" data-view="backtest">Backtest</button>
         <button class="mob-tab" data-view="forecast">Forecast</button>
+        <button class="mob-tab" data-view="simulator">Sim</button>
         <button class="mob-tab" data-view="paper">Paper</button>
       </nav>
     </div>

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { INDICATOR_CATALOG } from "../public/src/data/indicators.js";
 import { BUILTIN_STRATEGIES, materializeStrategy } from "../public/src/data/strategies.js";
 import { PaperPortfolio } from "../public/src/data/paperStore.js";
+import { SimSession } from "../public/src/data/simEngine.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WASM_PATH = path.join(__dirname, "..", "public", "risk-engine.wasm");
@@ -354,4 +355,44 @@ test("PaperPortfolio: Alpaca accepted order waits for fill reconciliation; netwo
     globalThis.fetch = origFetch;
     globalThis.localStorage = origLocalStorage;
   }
+});
+
+test("SimSession: exact net-of-commission PnL, SL/TP brackets, next-open fills, and Co-Pilot prompt triggers", () => {
+  const sim = new SimSession({ startingCash: 100000, feeBps: 10, slippageBps: 0, allowShort: false });
+  sim.reset(100000, 50, 100);
+
+  // 1. Instant bar-close round trip at flat price $100 with 10 bps fee -> realized PnL === equity - startingCash
+  sim.executeOrder({ side: "buy", shares: 100, price: 100, barIdx: 50, time: 1000, stopLossPct: 5, takeProfitPct: 10 });
+  assert.ok(Math.abs(sim.position.stopLossPrice - 95) < 1e-9);
+  assert.ok(Math.abs(sim.position.takeProfitPrice - 110) < 1e-9);
+  sim.executeOrder({ side: "sell", shares: 100, price: 100, barIdx: 51, time: 2000 });
+  const st1 = sim.getStats(100);
+  assert.ok(Math.abs(st1.realizedPnl - (-20)) < 1e-6);
+  assert.ok(Math.abs(st1.equity - 99980) < 1e-6);
+  assert.equal(st1.closedTotal, 1);
+
+  // 2. Next-Bar-Open mode queues order and fills at next bar's Open, then Stop-Loss exits intrabar
+  sim.fillMode = "next_open";
+  const q = sim.submitUserAction({ side: "buy", exactShares: 50, price: 100, barIdx: 51, time: 2000, stopLossPct: 5, takeProfitPct: 15 });
+  assert.equal(q.queued, true);
+  assert.equal(sim.position, null);
+  const evOpen = sim.processNewBarOpenAndBrackets({ o: 102, h: 104, l: 101, c: 103, t: 3000 }, 52);
+  assert.equal(evOpen[0].type, "queued_fill");
+  assert.equal(sim.position.avgPrice, 102);
+  const slPx = sim.position.stopLossPrice; // 102 * 0.95 = 96.9
+  const evSl = sim.processNewBarOpenAndBrackets({ o: 101, h: 102, l: 96, c: 97, t: 4000 }, 53);
+  assert.equal(evSl[0].type, "stop_loss");
+  assert.equal(sim.position, null);
+  assert.ok(Math.abs(evSl[0].fill.price - slPx) < 1e-6);
+
+  // 3. Co-Pilot Prompt Trigger: primes on initial bar, pauses on HOLD -> STRONG BUY shift
+  sim.pauseMode = "signal_change";
+  const bar0 = { o: 100, h: 101, l: 99, c: 100, t: 5000 };
+  const p0 = sim.evaluateBarSignal({ barIdx: 50, bar: bar0, score: 5, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
+  assert.equal(p0, null, "Initial prime bar should not fire prompt");
+  const p1 = sim.evaluateBarSignal({ barIdx: 51, bar: bar0, score: 65, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
+  assert.ok(p1 && p1.kind === "buy" && p1.headline.includes("STRONG BUY"));
+  // Repeating same rating does not re-trigger
+  const p2 = sim.evaluateBarSignal({ barIdx: 52, bar: bar0, score: 70, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
+  assert.equal(p2, null);
 });
