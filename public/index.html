@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Risk — WebAssembly Quant &amp; Multi-Strategy Terminal</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0e14'/%3E%3Cpath d='M14 44 L26 24 L36 34 L50 16' fill='none' stroke='%2310b981' stroke-width='5.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='50' cy='16' r='4.5' fill='%2338bdf8'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles/main.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <!-- Top Command Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand" title="Risk — 62-Indicator WebAssembly Quant Terminal">
+            <svg class="brand-mark" viewBox="0 0 28 28" width="24" height="24" aria-hidden="true">
+              <rect width="28" height="28" rx="7" fill="url(#riskBrandGrad)" />
+              <path d="M6.5 19.5 L11.5 11.5 L15.5 15 L21.5 7.5" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="21.5" cy="7.5" r="2.1" fill="#34d399" />
+              <defs>
+                <linearGradient id="riskBrandGrad" x1="0" y1="0" x2="28" y2="28" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#1e293b" />
+                  <stop offset="1" stop-color="#0f172a" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <span class="brand-name">RISK</span>
+          </div>
+
+          <div class="ticker-search-wrap">
+            <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              type="text"
+              id="tickerInput"
+              class="ticker-input mono"
+              value="NVDA"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Symbol (/)"
+            />
+            <div id="tickerDropdown" class="ticker-dropdown hidden"></div>
+          </div>
+
+          <div class="quote-strip" id="quoteStrip">
+            <strong class="quote-price mono" id="quotePrice">—</strong>
+            <span class="quote-chg mono" id="quoteChange">—</span>
+            <span class="quote-name muted-sm" id="quoteName">Loading…</span>
+          </div>
+        </div>
+
+        <nav class="nav-tabs" aria-label="Workspace Views">
+          <button class="nav-tab active" data-view="terminal">Terminal</button>
+          <button class="nav-tab" data-view="arena">Strategy Arena</button>
+          <button class="nav-tab" data-view="backtest">Backtest &amp; Sweep</button>
+          <button class="nav-tab" data-view="forecast">Forecast Lab</button>
+          <button class="nav-tab" data-view="paper">Paper Desk</button>
+        </nav>
+
+        <div class="topbar-right">
+          <span class="telemetry-pill mono" id="wasmBadge" title="WebAssembly engine execution time">⚡ WASM —</span>
+          <span class="telemetry-pill source-pill" id="sourceBadge" title="Market data feed status">CONNECTING</span>
+        </div>
+      </header>
+
+      <!-- Mobile Sticky Verdict Strip (Visible <= 720px) -->
+      <div class="mobile-verdict-strip" id="mobileVerdictStrip">
+        <span id="mobileVerdictText" class="mono">Loading signal…</span>
+        <button class="link-btn" id="mobileConsensusBtn">Arena →</button>
+      </div>
+
+      <!-- Global Strategy Switcher + Consensus + Ticker Controls -->
+      <div class="subbar">
+        <div class="subbar-left">
+          <div class="strategy-bar-group">
+            <div class="switcher-wrap">
+              <button class="switcher-trigger" id="strategySwitcherBtn" title="Switch Strategy (⌘K / Ctrl+K)">
+                <span class="bar-tag">STRAT</span>
+                <span id="switcherLabel" class="switcher-label">Quant Multi-Factor Core</span>
+                <span id="switcherVerdictPill" class="signal-pill flat">—</span>
+                <span class="kbd-hint mono">⌘K</span>
+              </button>
+              <div id="strategySwitcherPopover" class="switcher-popover hidden"></div>
+            </div>
+            <div class="step-btns">
+              <button class="btn-ghost-xs mono" id="prevStratBtn" title="Previous ranked strategy ([)">[</button>
+              <button class="btn-ghost-xs mono" id="nextStratBtn" title="Next ranked strategy (])">]</button>
+            </div>
+            <button class="btn-ghost-xs" id="globalNewStratBtn" title="Open Strategy Creator Studio">+ Create</button>
+          </div>
+
+          <button class="consensus-live-pill" id="globalConsensusPill" title="Cross-strategy agreement across all 24+ strategies — click to inspect Strategy Arena">
+            <span class="dot-live"></span>
+            <span id="globalConsensusText" class="mono">CONSENSUS: CALCULATING…</span>
+          </button>
+
+          <button class="btn-ghost-xs" id="globalCompareBtn" title="Overlay active + pinned strategies in the chart lower pane">
+            Compare (<span id="pinnedCountBadge">3</span>)
+          </button>
+        </div>
+
+        <div class="subbar-controls">
+          <div class="quick-tickers" id="quickTickers"></div>
+
+          <div class="segmented" id="intervalGroup" title="Bar Interval">
+            <button data-interval="5m">5m</button>
+            <button data-interval="15m">15m</button>
+            <button data-interval="1h">1h</button>
+            <button data-interval="1d" class="active">1D</button>
+            <button data-interval="1wk">1W</button>
+          </div>
+
+          <div class="segmented" id="rangeGroup" title="Historical Range">
+            <button data-range="1mo">1M</button>
+            <button data-range="3mo">3M</button>
+            <button data-range="6mo">6M</button>
+            <button data-range="1y" class="active">1Y</button>
+            <button data-range="2y">2Y</button>
+            <button data-range="5y">5Y</button>
+          </div>
+
+          <button class="btn-ghost-xs" id="refreshDataBtn" title="Refresh live market data">↻</button>
+        </div>
+      </div>
+
+      <!-- Main Workspace -->
+      <main class="workspace">
+        <!-- VIEW 1: TERMINAL -->
+        <section id="view-terminal" class="view-pane active">
+          <div class="terminal-grid">
+            <div class="chart-column">
+              <div class="chart-toolbar">
+                <div class="chart-toolbar-group">
+                  <div class="segmented sm" id="chartStyleGroup">
+                    <button data-style="candles" class="active">Candles</button>
+                    <button data-style="heikin">Heikin-Ashi</button>
+                    <button data-style="area">Area</button>
+                  </div>
+                  <button class="chip-toggle active" id="toggleForecastBtn">Forecast Cone</button>
+                  <button class="chip-toggle active" id="toggleSignalsBtn">Signals</button>
+                  <button class="chip-toggle active" id="toggleHaloBtn" title="Subtle top regime ribbon when ≥65% of all strategies align">Consensus Ribbon</button>
+                </div>
+
+                <div class="chart-toolbar-group">
+                  <label class="subpane-picker">
+                    <span class="muted-sm">Lower Pane</span>
+                    <select id="subPaneSelect" class="mini-select">
+                      <option value="matrix">Strategy Agreement Matrix (24×Time)</option>
+                      <option value="consensus">Multi-Strategy Consensus (% Agree)</option>
+                      <option value="compare">Pinned Strategies Overlay</option>
+                      <option value="score">Active Strategy Conviction</option>
+                    </select>
+                  </label>
+                  <button class="btn-ghost-xs" id="resetZoomBtn" title="Reset chart zoom (or double-click chart)">Reset</button>
+                </div>
+              </div>
+
+              <div class="chart-stage">
+                <canvas id="mainChartCanvas"></canvas>
+              </div>
+            </div>
+
+            <aside class="right-rail">
+              <div id="decisionPanelContainer"></div>
+              <div id="strategyBuilderContainer"></div>
+            </aside>
+          </div>
+        </section>
+
+        <!-- VIEW 2: STRATEGY ARENA & LEADERBOARD -->
+        <section id="view-arena" class="view-pane">
+          <div id="strategyArenaContainer"></div>
+        </section>
+
+        <!-- VIEW 3: BACKTEST & SWEEP -->
+        <section id="view-backtest" class="view-pane">
+          <div id="backtestViewContainer"></div>
+        </section>
+
+        <!-- VIEW 4: FORECAST LAB -->
+        <section id="view-forecast" class="view-pane">
+          <div id="forecastViewContainer"></div>
+        </section>
+
+        <!-- VIEW 5: PAPER DESK -->
+        <section id="view-paper" class="view-pane">
+          <div id="paperDeskViewContainer"></div>
+        </section>
+      </main>
+
+      <!-- Mobile Bottom Navigation Bar (Visible <= 720px) -->
+      <nav class="mobile-bottom-nav" aria-label="Mobile Navigation">
+        <button class="mob-tab active" data-view="terminal">Terminal</button>
+        <button class="mob-tab" data-view="arena">Arena</button>
+        <button class="mob-tab" data-view="backtest">Backtest</button>
+        <button class="mob-tab" data-view="forecast">Forecast</button>
+        <button class="mob-tab" data-view="paper">Paper</button>
+      </nav>
+    </div>
+
+    <div id="toastRoot" class="toast-root" aria-live="polite"></div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
