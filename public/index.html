@@ -124,6 +124,7 @@
           </div>
 
           <div class="segmented" id="rangeGroup" title="Historical Range">
+            <button data-range="5d">5D</button>
             <button data-range="1mo">1M</button>
             <button data-range="3mo">3M</button>
             <button data-range="6mo">6M</button>
@@ -132,6 +133,7 @@
             <button data-range="5y">5Y</button>
           </div>
 
+          <button class="btn-ghost-xs" id="openUniverseBtn" title="Browse 52 Fortune 100 stocks & major indexes + Live Signal Scanner">Markets (52)</button>
           <button class="btn-ghost-xs" id="refreshDataBtn" title="Refresh live market data">↻</button>
         </div>
       </div>
@@ -149,9 +151,16 @@
                     <button data-style="heikin">Heikin-Ashi</button>
                     <button data-style="area">Area</button>
                   </div>
-                  <button class="chip-toggle active" id="toggleForecastBtn">Forecast Cone</button>
+                  <button class="chip-toggle active" id="toggleForecastBtn">Forecast</button>
                   <button class="chip-toggle active" id="toggleSignalsBtn">Signals</button>
-                  <button class="chip-toggle active" id="toggleHaloBtn" title="Subtle top regime ribbon when ≥65% of all strategies align">Consensus Ribbon</button>
+                  <button class="chip-toggle active" id="toggleHaloBtn" title="Subtle top regime ribbon when ≥65% of all strategies align">Ribbon</button>
+                  <button class="chip-toggle active" id="toggleLivePopupBtn" title="Show real-time Trade Recommendation popups on chart when strategy signals">Popups</button>
+                  <select id="livePollSelect" class="mini-select" title="Auto-refresh live market data & check for new trade signals">
+                    <option value="0" selected>Poll: Off</option>
+                    <option value="15000">Live 15s</option>
+                    <option value="30000">Live 30s</option>
+                    <option value="60000">Live 60s</option>
+                  </select>
                 </div>
 
                 <div class="chart-toolbar-group">
@@ -170,6 +179,7 @@
 
               <div class="chart-stage">
                 <canvas id="mainChartCanvas"></canvas>
+                <div id="chartSignalPopup" class="chart-signal-popup-host hidden"></div>
               </div>
             </div>
 

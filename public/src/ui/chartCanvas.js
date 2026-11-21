@@ -525,25 +525,61 @@ export class QuantChartCanvas {
       }
     }
 
-    // Interactive Simulator: Open Position Entry / SL / TP Lines + User Fill Diamond Markers
+    // Interactive Simulator & Live Terminal: Open Position Entry / SL / TP Lines + Opaque Pills + Off-Scale Badges
     if (this.simPosition && Math.abs(this.simPosition.qty) > 1e-8) {
+      let topOffCount = 0;
+      let botOffCount = 0;
       const drawRefLine = (val, color, label) => {
         if (!Number.isFinite(val)) return;
         const y = yOf(val);
-        if (y < mainTop + 4 || y > mainBot - 4) return;
+        const txt = `${label} $${fmtPrice(val)}`;
         ctx.save();
+        ctx.font = "700 9.5px 'JetBrains Mono', ui-monospace, monospace";
+        const tw = ctx.measureText(txt).width + 10;
+        if (y < mainTop + 8) {
+          const bx = padL + plotW - tw - 6 - topOffCount * (tw + 6);
+          topOffCount++;
+          ctx.fillStyle = "rgba(11, 14, 20, 0.9)";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.roundRect(bx, mainTop + 22, tw + 10, 16, 4); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = color;
+          ctx.textAlign = "left";
+          ctx.fillText(`↑ ${txt}`, bx + 5, mainTop + 33);
+          ctx.restore();
+          return;
+        }
+        if (y > mainBot - 8) {
+          const bx = padL + plotW - tw - 6 - botOffCount * (tw + 6);
+          botOffCount++;
+          ctx.fillStyle = "rgba(11, 14, 20, 0.9)";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.roundRect(bx, mainBot - 22, tw + 10, 16, 4); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = color;
+          ctx.textAlign = "left";
+          ctx.fillText(`↓ ${txt}`, bx + 5, mainBot - 11);
+          ctx.restore();
+          return;
+        }
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.25;
         ctx.setLineDash([5, 4]);
         ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
         ctx.setLineDash([]);
+        // Opaque pill positioned cleanly on left edge so it NEVER collides with Forecast Cone!
+        const pillX = padL + 6;
+        const pillY = Math.max(mainTop + 20, Math.min(mainBot - 18, y - 8));
+        ctx.fillStyle = "rgba(11, 14, 20, 0.88)";
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 0.9;
+        ctx.beginPath(); ctx.roundRect(pillX, pillY, tw, 15, 4); ctx.fill(); ctx.stroke();
         ctx.fillStyle = color;
-        ctx.font = "700 9px 'JetBrains Mono', ui-monospace, monospace";
-        ctx.textAlign = "right";
-        ctx.fillText(`${label} $${fmtPrice(val)}`, padL + plotW - 6, y - 4);
+        ctx.textAlign = "left";
+        ctx.fillText(txt, pillX + 5, pillY + 10.5);
         ctx.restore();
       };
-      drawRefLine(this.simPosition.avgPrice, "#38bdf8", this.simPosition.qty > 0 ? "YOUR LONG" : "YOUR SHORT");
+      drawRefLine(this.simPosition.avgPrice, "#38bdf8", this.simPosition.qty > 0 ? "LONG" : "SHORT");
       drawRefLine(this.simPosition.stopLossPrice, "#fb7185", "SL");
       drawRefLine(this.simPosition.takeProfitPrice, "#34d399", "TP");
     }

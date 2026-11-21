@@ -7,6 +7,7 @@ import { INDICATOR_CATALOG } from "../public/src/data/indicators.js";
 import { BUILTIN_STRATEGIES, materializeStrategy } from "../public/src/data/strategies.js";
 import { PaperPortfolio } from "../public/src/data/paperStore.js";
 import { SimSession } from "../public/src/data/simEngine.js";
+import { computeLiveTradeRecommendation } from "../public/src/ui/tradePopup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WASM_PATH = path.join(__dirname, "..", "public", "risk-engine.wasm");
@@ -395,4 +396,269 @@ test("SimSession: exact net-of-commission PnL, SL/TP brackets, next-open fills, 
   // Repeating same rating does not re-trigger
   const p2 = sim.evaluateBarSignal({ barIdx: 52, bar: bar0, score: 70, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
   assert.equal(p2, null);
+});
+
+test("computeLiveTradeRecommendation: ATR-based SL/TP sizing, exit recommendation on open long, null on HOLD", async () => {
+  const bars = makeSyntheticBars(60);
+  const score = new Float64Array(60);
+  const p = new PaperPortfolio();
+  p.reset(100000);
+
+  // HOLD -> no popup
+  score[59] = 4;
+  assert.equal(computeLiveTradeRecommendation({ symbol: "NVDA", bars, score, portfolio: p }), null);
+
+  // STRONG BUY when flat -> recommends LONG with ATR stop < entry < target and risk-bounded shares
+  score[59] = 68;
+  const buyRec = computeLiveTradeRecommendation({ symbol: "NVDA", bars, score, portfolio: p, riskPct: 1.5 });
+  assert.equal(buyRec.action, "buy");
+  assert.ok(buyRec.stopLoss < buyRec.entryPx && buyRec.takeProfit > buyRec.entryPx);
+  assert.ok(buyRec.shares >= 1 && buyRec.rrRatio >= 1.5);
+
+  // Once long, SELL signal recommends FLATTEN / EXIT of the exact held quantity
+  await p.submitMarketOrder({ symbol: "NVDA", side: "buy", qty: 50, price: buyRec.entryPx });
+  score[59] = -40;
+  const exitRec = computeLiveTradeRecommendation({ symbol: "NVDA", bars, score, portfolio: p });
+  assert.equal(exitRec.action, "flatten");
+  assert.equal(exitRec.shares, 50);
+
+  // When flat with allowShort=false, SELL signal returns 'caution' (NEVER a bypass short order!)
+  const pFlat = new PaperPortfolio();
+  pFlat.reset(100000);
+  pFlat.setFlags({ allowShort: false });
+  const cautionRec = computeLiveTradeRecommendation({ symbol: "NVDA", bars, score, portfolio: pFlat, allowShort: false });
+  assert.equal(cautionRec.action, "caution");
+  assert.equal(cautionRec.shares, 0);
+});
+
+test("PaperPortfolio: OCO bracket cancels sibling (stop-first), respects post-order bar time, guards shorting, and sends Alpaca native bracket", async () => {
+  const p = new PaperPortfolio();
+  p.reset(100000);
+  p.setFlags({ alpacaSync: false, allowShort: false, feeBps: 0, slippageBps: 0 });
+
+  // 1. Short guard blocks opening a short when allowShort is false
+  await assert.rejects(() => p.submitMarketOrder({ symbol: "NVDA", side: "sell", qty: 10, price: 100 }), /Shorting is disabled/);
+
+  // 2. Buy 100 @ $100 with linked OCO SL=$95 / TP=$110 on bar t=1000
+  await p.submitMarketOrder({ symbol: "NVDA", side: "buy", qty: 100, price: 100, stopLoss: 95, takeProfit: 110, eligibleAfterBarTime: 1000 });
+  assert.equal(p.state.pendingOrders.length, 2);
+
+  // Bar at t=1000 (creation bar) must NOT trigger SL/TP on prior intrabar H/L!
+  await p.processBar("NVDA", { t: 1000, o: 100, h: 120, l: 80, c: 100 });
+  assert.equal(p.state.positions.NVDA.qty, 100);
+  assert.equal(p.state.pendingOrders.length, 2);
+
+  // Next bar t=2000 touches BOTH SL ($95) and TP ($110): conservative Stop-First fills SL ONLY, cancels sibling TP, position goes flat (NEVER reverses!)
+  await p.processBar("NVDA", { t: 2000, o: 100, h: 115, l: 90, c: 105 });
+  assert.equal(p.state.positions.NVDA, undefined, "Position must be flat after OCO SL fill");
+  assert.equal(p.state.pendingOrders.length, 0, "Sibling OCO TP must be cancelled automatically");
+  assert.equal(p.state.trades[0].price, 95, "Stop-first must fill at SL $95");
+
+  // 2b. Gap-down through stop ($95 stop on bar opening at $80) must fill at gap Open ($80), NOT $95!
+  await p.submitMarketOrder({ symbol: "AMD", side: "buy", qty: 10, price: 100, stopLoss: 95, takeProfit: 115, eligibleAfterBarTime: 2000 });
+  await p.processBar("AMD", { t: 3000, o: 80, h: 85, l: 78, c: 82 });
+  assert.equal(p.state.positions.AMD, undefined);
+  assert.equal(p.state.pendingOrders.length, 0);
+  assert.equal(p.state.trades[0].price, 80, "Sell stop gapped through at Open $80 must fill at $80, not $95");
+
+  // 2c. Failed OCO trigger submission (e.g. switched to Alpaca sync with no keys -> rejected) must PRESERVE protective OCO legs!
+  await p.submitMarketOrder({ symbol: "TSLA", side: "buy", qty: 10, price: 200, stopLoss: 190, takeProfit: 220, eligibleAfterBarTime: 3000 });
+  assert.equal(p.state.pendingOrders.length, 2);
+  p.setFlags({ alpacaSync: true }); // no keys -> submitMarketOrder returns rejected (applied: false)
+  await p.processBar("TSLA", { t: 4000, o: 188, h: 192, l: 185, c: 186 });
+  assert.equal(p.state.positions.TSLA.qty, 10, "Position remains open when broker rejects exit");
+  assert.equal(p.state.pendingOrders.length, 2, "OCO legs must remain intact when triggered submission fails/rejects");
+  p.setFlags({ alpacaSync: false });
+  p.cancelPositionBrackets("TSLA");
+
+  // 2d. Unresolved broker exit (accepted/unknown) locks OCO group against duplicate submissions across ticks & concurrent processBar calls!
+  const origLS2 = globalThis.localStorage;
+  const origF2 = globalThis.fetch;
+  const st2 = new Map();
+  globalThis.localStorage = { getItem: (k) => st2.get(k) ?? null, setItem: (k, v) => st2.set(k, String(v)), removeItem: (k) => st2.delete(k) };
+  st2.set("risk_data_settings_v1", JSON.stringify({ alpacaKey: "PK", alpacaSecret: "SK" }));
+  let postCount = 0;
+  let lastCid = null;
+  globalThis.fetch = async (url, opts) => {
+    if (opts?.method === "POST") {
+      postCount++;
+      lastCid = JSON.parse(opts.body).client_order_id;
+      return { ok: true, status: 200, json: async () => ({ id: "alp_ex", client_order_id: lastCid, status: "accepted", filled_qty: "0" }) };
+    }
+    // Reconcile fills the exit order cleanly -> removes OCO legs!
+    return { ok: true, status: 200, json: async () => ({ id: "alp_ex", client_order_id: lastCid, status: "filled", filled_qty: "10", filled_avg_price: "94" }) };
+  };
+  try {
+    await p.submitMarketOrder({ symbol: "META", side: "buy", qty: 10, price: 100, stopLoss: 95, takeProfit: 115, eligibleAfterBarTime: 4000 });
+    p.setFlags({ alpacaSync: true });
+    // Two concurrent triggering ticks + a third tick must ONLY send ONE broker exit!
+    await Promise.all([
+      p.processBar("META", { t: 5000, o: 94, h: 96, l: 93, c: 94 }, { isLiveTick: true }),
+      p.processBar("META", { t: 5001, o: 94, h: 95, l: 92, c: 93 }, { isLiveTick: true }),
+    ]);
+    await p.processBar("META", { t: 5002, o: 93, h: 94, l: 91, c: 92 }, { isLiveTick: true });
+    assert.equal(postCount, 1, "Unresolved OCO exit must never submit duplicate broker exits on subsequent/concurrent ticks");
+    assert.equal(p.state.pendingOrders.length, 2, "OCO legs remain tracked (locked) until reconciled");
+    await p.reconcileBrokerOrders();
+    assert.equal(p.state.positions.META, undefined, "Reconciled exit closes META position");
+    assert.equal(p.state.pendingOrders.length, 0, "Reconciled exit cleans up OCO legs");
+
+    // 2d-ii. Broker 404 on an unknown exit must release the OCO lock so protection stays active!
+    p.setFlags({ alpacaSync: false });
+    await p.submitMarketOrder({ symbol: "INTC", side: "buy", qty: 10, price: 30, stopLoss: 28, takeProfit: 35, eligibleAfterBarTime: 5000 });
+    p.setFlags({ alpacaSync: true });
+    let intcPhase = "network_fail";
+    let intcPosts = 0;
+    globalThis.fetch = async (url, opts) => {
+      if (opts?.method === "POST") {
+        intcPosts++;
+        lastCid = JSON.parse(opts.body).client_order_id;
+        if (intcPhase === "network_fail") throw new Error("timeout");
+        return { ok: true, status: 200, json: async () => ({ id: "alp_intc2", client_order_id: lastCid, status: "filled", filled_qty: "10", filled_avg_price: "27.5" }) };
+      }
+      // 404 -> unknown order never reached Alpaca -> becomes not_found -> MUST release OCO lock!
+      return { ok: false, status: 404, json: async () => ({ message: "order not found" }) };
+    };
+    await p.processBar("INTC", { t: 6000, o: 27.5, h: 28.2, l: 27.0, c: 27.5 }, { isLiveTick: true });
+    assert.equal(intcPosts, 1);
+    assert.ok(p.state.pendingOrders.every((o) => o.symbol !== "INTC" || o.inFlightClientOrderId), "Unknown exit locks INTC OCO");
+    await p.reconcileBrokerOrders();
+    assert.ok(p.state.pendingOrders.every((o) => o.symbol !== "INTC" || o.inFlightClientOrderId === null), "404 not_found must release OCO lock");
+    intcPhase = "fill_ok";
+    await p.processBar("INTC", { t: 6001, o: 27.5, h: 28.0, l: 27.0, c: 27.5 }, { isLiveTick: true });
+    assert.equal(intcPosts, 2, "Unlocked OCO must retry and exit INTC after 404 not_found");
+    assert.equal(p.state.positions.INTC, undefined, "INTC position closed after OCO retry");
+
+    // 2d-iii. Immediate partial fill on broker exit must NOT remove OCO legs; reduces qty, locks while open, unlocks on cancel!
+    p.setFlags({ alpacaSync: false });
+    await p.submitMarketOrder({ symbol: "GOOG", side: "buy", qty: 10, price: 200, stopLoss: 190, takeProfit: 220, eligibleAfterBarTime: 6000 });
+    p.setFlags({ alpacaSync: true });
+    let googPosts = 0;
+    globalThis.fetch = async (url, opts) => {
+      if (opts?.method === "POST") {
+        googPosts++;
+        lastCid = JSON.parse(opts.body).client_order_id;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: "alp_goog_part",
+            client_order_id: lastCid,
+            status: "partially_filled",
+            filled_qty: "4",
+            filled_avg_price: "189",
+          }),
+        };
+      }
+      // Broker cancels the remaining 6 shares -> must release lock while keeping 6-share OCO active!
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "alp_goog_part",
+          client_order_id: lastCid,
+          status: "canceled",
+          filled_qty: "4",
+          filled_avg_price: "189",
+        }),
+      };
+    };
+    await p.processBar("GOOG", { t: 7000, o: 189, h: 191, l: 188, c: 189 }, { isLiveTick: true });
+    assert.equal(p.state.positions.GOOG.qty, 6, "Immediate partial fill leaves 6 shares open");
+    const googOco = p.state.pendingOrders.filter((o) => o.symbol === "GOOG");
+    assert.equal(googOco.length, 2, "Both protective OCO legs must remain after immediate partial fill");
+    assert.ok(googOco.every((o) => o.qty === 6 && o.inFlightClientOrderId === lastCid), "OCO legs reduced to 6 shares and locked");
+    // Second tick while still partially_filled must NOT send duplicate exit
+    await p.processBar("GOOG", { t: 7001, o: 188, h: 189, l: 187, c: 188 }, { isLiveTick: true });
+    assert.equal(googPosts, 1, "Locked partially-filled OCO must not submit duplicate exit");
+    await p.reconcileBrokerOrders();
+    const googOcoAfterCancel = p.state.pendingOrders.filter((o) => o.symbol === "GOOG");
+    assert.equal(googOcoAfterCancel.length, 2, "Both OCO legs stay active after partial exit cancels");
+    assert.ok(googOcoAfterCancel.every((o) => o.qty === 6 && o.inFlightClientOrderId === null), "OCO lock released for remaining 6 shares");
+    p.cancelPositionBrackets("GOOG");
+  } finally {
+    globalThis.fetch = origF2;
+    globalThis.localStorage = origLS2;
+    p.setFlags({ alpacaSync: false });
+  }
+
+  // 2e. SimSession shadow strategy mirrors allowShort & SL/TP brackets — including entry-bar brackets and open reversals!
+  const simShadow = new SimSession({ startingCash: 100000, feeBps: 0, slippageBps: 0, allowShort: true, shadowStopLossPct: 5, shadowTakeProfitPct: 10 });
+  simShadow.reset(100000, 10, 100);
+  simShadow.evaluateBarSignal({ barIdx: 10, bar: { o: 100, h: 101, l: 99, c: 100, t: 1000 }, score: -50, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
+  // Entry bar opens at $100 (enters short) and immediately plunges to $89 (crosses 10% TP at $90 on entry bar!)
+  simShadow.processNewBarOpenAndBrackets({ o: 100, h: 101, l: 89, c: 91, t: 2000 }, 11);
+  assert.equal(simShadow.shadow.qty, 0, "Shadow short entered at open must trigger TP on entry bar itself");
+  assert.ok(simShadow.getStats(91).shadowReturnPct > 9.5, "Entry-bar shadow short TP must realize ~+10%");
+
+  // Pending reversal at bar open must execute BEFORE intrabar brackets on the old position!
+  const simRev = new SimSession({ startingCash: 100000, feeBps: 0, slippageBps: 0, allowShort: true, shadowStopLossPct: 5, shadowTakeProfitPct: 10 });
+  simRev.reset(100000, 10, 100);
+  simRev.evaluateBarSignal({ barIdx: 10, bar: { o: 100, h: 101, l: 99, c: 100, t: 1000 }, score: 50, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
+  simRev.processNewBarOpenAndBrackets({ o: 100, h: 102, l: 98, c: 101, t: 2000 }, 11);
+  assert.ok(simRev.shadow.qty > 0, "Shadow enters long at bar 11 open");
+  // Bar 11 close queues a sell reversal for bar 12 open
+  simRev.evaluateBarSignal({ barIdx: 11, bar: { o: 100, h: 102, l: 98, c: 101, t: 2000 }, score: -50, thresholds: { strongBuy: 52, buy: 18, sell: -18, strongSell: -52 } });
+  // Bar 12 opens at $101 (reverses long -> short at $101), then drops to $94 (would have stopped old long at $95, but is favorable for new short!)
+  simRev.processNewBarOpenAndBrackets({ o: 101, h: 102, l: 94, c: 95, t: 3000 }, 12);
+  assert.ok(simRev.shadow.qty < 0, "Queued open reversal must flip to short at open instead of being superseded by old long's intrabar stop");
+
+  // 3. Flatten cancels orphaned OCO brackets automatically
+  await p.submitMarketOrder({ symbol: "SPY", side: "buy", qty: 10, price: 500, stopLoss: 480, takeProfit: 540, eligibleAfterBarTime: 2000 });
+  assert.equal(p.state.pendingOrders.length, 2);
+  await p.submitMarketOrder({ symbol: "SPY", side: "sell", qty: 10, price: 505, source: "flatten", bypassShortGuard: true });
+  assert.equal(p.state.pendingOrders.length, 0, "Flattening position must cancel all linked OCO brackets");
+
+  // 4. Alpaca sync sends broker-native order_class='bracket' and does NOT fabricate local resting orders
+  const origLocalStorage = globalThis.localStorage;
+  const origFetch = globalThis.fetch;
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  store.set("risk_data_settings_v1", JSON.stringify({ alpacaKey: "PK", alpacaSecret: "SK" }));
+  let sentBody = null;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    return { ok: true, status: 200, json: async () => ({ id: "alp_b", client_order_id: sentBody.client_order_id, status: "accepted", filled_qty: "0" }) };
+  };
+  try {
+    const pAlp = new PaperPortfolio();
+    pAlp.reset(100000);
+    pAlp.setFlags({ alpacaSync: true });
+    await pAlp.submitMarketOrder({ symbol: "NVDA", side: "buy", qty: 10, price: 100, stopLoss: 95, takeProfit: 112 });
+    assert.equal(sentBody.order_class, "bracket");
+    assert.equal(sentBody.stop_loss.stop_price, "95");
+    assert.equal(sentBody.take_profit.limit_price, "112");
+    assert.equal(pAlp.state.pendingOrders.length, 0, "Alpaca bracket must not fabricate local resting orders");
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.localStorage = origLocalStorage;
+  }
+});
+
+test("WASM runThresholdSweep matches exact argument signature and 4-float stride", async () => {
+  const wasm = await loadWasm();
+  const bars = makeSyntheticBars(240);
+  populateBars(wasm, bars);
+  wasm.resetComposite();
+  wasm.computeIndicator(1, 12, 26, 0, 0, 0);
+  wasm.accumulateRule(1.0, 0, 0.35, 0.25);
+  wasm.finalizeComposite();
+
+  const g = wasm.runThresholdSweep(8, 56, -56, -8, 4, 0, 100000, 100, 0, 0, 1, 2, 252);
+  assert.equal(g, 4);
+  const buf = new Float64Array(wasm.memory.buffer, wasm.getSweepPtr(), g * g * 4);
+  let sawTrades = 0;
+  for (let i = 0; i < g * g; i++) {
+    const sr = buf[i * 4];
+    const ret = buf[i * 4 + 1];
+    const dd = buf[i * 4 + 2];
+    const tr = buf[i * 4 + 3];
+    assert.ok(Number.isFinite(sr) && Number.isFinite(ret) && Number.isFinite(dd) && tr >= 0 && Number.isInteger(tr));
+    if (tr > 0) sawTrades++;
+  }
+  assert.ok(sawTrades > 0, "Sweep grid should produce closed train trades");
 });

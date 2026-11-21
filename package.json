@@ -8,6 +8,7 @@
     "build:wasm": "asc wasm/engine.ts --config asconfig.json",
     "dev": "node server.mjs",
     "start": "npm run build:wasm && node server.mjs",
+    "benchmark": "node scripts/run-benchmarks.mjs",
     "test": "npm run build:wasm && node --test tests/engine.test.mjs"
   },
   "devDependencies": {

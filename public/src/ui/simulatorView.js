@@ -1,6 +1,6 @@
 import { INDICATOR_BY_ID } from "../data/indicators.js";
 import { classifyScore, DEFAULT_THRESHOLDS } from "../data/strategies.js";
-import { SIM_PAUSE_MODES, SIM_TIME_PRESETS } from "../data/simEngine.js";
+import { SIM_PAUSE_MODES } from "../data/simEngine.js";
 import { computeConsensusSummary, fmtFixed, fmtPct, fmtMoney, cleanZero, plural } from "./format.js";
 
 function esc(s) {
@@ -26,30 +26,42 @@ export function renderSimulatorDeck(container, {
   onStep,
   onNextPrompt,
   onSpeedChange,
-  onScrubStart,
+  onSetRegion,
   onRandomStart,
   onResetSim,
-  onSelectPreset,
   onPauseModeChange,
   onFillModeChange,
 }) {
   if (!container) return;
   const total = fullBars.length;
   const minCursor = Math.min(total, Math.max(45, Math.min(70, Math.floor(total * 0.25))));
-  const cursor = Math.min(total, Math.max(minCursor, simState.cursor || minCursor));
+  const startCursor = Math.min(total, Math.max(minCursor, simState.startCursor || minCursor));
+  const endCursor = Math.min(total, Math.max(startCursor, simState.endCursor || total));
+  const cursor = Math.min(endCursor, Math.max(startCursor, simState.cursor || startCursor));
   const curBar = fullBars[cursor - 1];
-  const atEnd = cursor >= total;
+  const startBar = fullBars[startCursor - 1];
+  const endBar = fullBars[endCursor - 1];
+  const regionLen = Math.max(1, endCursor - startCursor);
+  const progressInRegion = Math.max(0, cursor - startCursor);
+  const atEnd = cursor >= endCursor;
   const bigJumpLabel = interval === "5m" ? "+1h" : interval === "15m" ? "+1d" : interval === "1h" ? "+1d" : "+1w";
   const bigJumpBars = interval === "5m" ? 12 : interval === "15m" ? 26 : interval === "1h" ? 7 : 5;
-
-  const presetBtns = SIM_TIME_PRESETS.map((p) => {
-    const active = p.interval === interval && p.range === range;
-    return `<button class="pill-btn ${active ? "active" : ""}" data-sim-preset="${p.id}" title="${esc(p.title)}">${p.label}</button>`;
-  }).join("");
 
   const modeOpts = SIM_PAUSE_MODES.map(
     (m) => `<option value="${m.id}" ${sim.pauseMode === m.id ? "selected" : ""}>${esc(m.label)}</option>`
   ).join("");
+
+  const regionQuickBtns = [
+    { id: "30", label: "Last 30", start: Math.max(minCursor, total - 30), end: total },
+    { id: "60", label: "Last 60", start: Math.max(minCursor, total - 60), end: total },
+    { id: "120", label: "Last 120", start: Math.max(minCursor, total - 120), end: total },
+    { id: "full", label: "Full Region", start: minCursor, end: total },
+  ]
+    .map((q) => {
+      const isAct = startCursor === q.start && endCursor === q.end;
+      return `<button class="pill-btn ${isAct ? "active" : ""}" data-sim-region="${q.start}:${q.end}" title="Replay bars ${q.start} to ${q.end}">${q.label}</button>`;
+    })
+    .join("");
 
   container.innerHTML = `
     <div class="sim-deck-top">
@@ -71,22 +83,33 @@ export function renderSimulatorDeck(container, {
       </div>
 
       <div class="sim-scrubber-wrap">
-        <span class="mono sim-date-pill" title="Current simulated timestamp">${fmtBarTime(curBar?.t, interval)}</span>
-        <input type="range" id="simScrubRange" min="${minCursor}" max="${Math.max(minCursor, total)}" value="${cursor}" title="Scrub historical start point (resets session from chosen bar)" />
-        <span class="mono muted-sm" style="white-space:nowrap">${cursor}/${total}</span>
+        <span class="mono sim-date-pill" title="Current revealed timestamp">${fmtBarTime(curBar?.t, interval)}</span>
+        <input type="range" id="simScrubRange" min="${startCursor}" max="${endCursor}" value="${cursor}" title="Scrub within active replay region (${startCursor} → ${endCursor})" />
+        <span class="mono muted-sm" style="white-space:nowrap">${progressInRegion}/${regionLen} bars</span>
       </div>
 
       <div class="sim-deck-actions">
-        <button class="btn-ghost-xs" id="simRandomBtn" title="Jump to a random historical start point for blind practice">🎲 Random</button>
-        <button class="btn-ghost-xs" id="simResetBtn" title="Reset $100k simulator wallet at current start bar">Reset $100k</button>
+        <button class="btn-ghost-xs" id="simRandomBtn" title="Pick a random replay region for blind practice">🎲 Random</button>
+        <button class="btn-ghost-xs" id="simResetBtn" title="Reset $100k simulator wallet at region start">Reset $100k</button>
       </div>
     </div>
 
     <div class="sim-deck-sub">
       <div class="sim-preset-row">
-        <span class="bar-tag">SESSION</span>
-        ${presetBtns}
+        <span class="sim-inherit-chip mono" title="Inherits Bar Interval and Chart Length from top-right toolbar">${interval.toUpperCase()} · ${range.toUpperCase()} (${total}b)</span>
+        <label class="sim-bound-ctl" title="Replay start bar">
+          <span class="bar-tag">START</span>
+          <input type="number" id="simStartBarInp" class="mono sim-num-inp" min="${minCursor}" max="${endCursor}" value="${startCursor}" />
+          <span class="muted mono" style="font-size:10px">${fmtBarTime(startBar?.t, interval)}</span>
+        </label>
+        <label class="sim-bound-ctl" title="Replay end bar">
+          <span class="bar-tag">END</span>
+          <input type="number" id="simEndBarInp" class="mono sim-num-inp" min="${startCursor}" max="${total}" value="${endCursor}" />
+          <span class="muted mono" style="font-size:10px">${fmtBarTime(endBar?.t, interval)}</span>
+        </label>
+        <div class="cat-pills">${regionQuickBtns}</div>
       </div>
+
       <div class="sim-copilot-cfg">
         <label class="subpane-picker">
           <span class="bar-tag">CO-PILOT</span>
@@ -106,15 +129,23 @@ export function renderSimulatorDeck(container, {
   container.querySelector("#simStepJumpBtn")?.addEventListener("click", () => onStep?.(bigJumpBars));
   container.querySelector("#simNextPromptBtn")?.addEventListener("click", () => onNextPrompt?.());
   container.querySelector("#simSpeedSelect")?.addEventListener("change", (e) => onSpeedChange?.(Number(e.target.value)));
-  container.querySelector("#simScrubRange")?.addEventListener("change", (e) => onScrubStart?.(Number(e.target.value)));
-  container.querySelector("#simRandomBtn")?.addEventListener("click", () => onRandomStart?.());
-  container.querySelector("#simResetBtn")?.addEventListener("click", () => onResetSim?.());
-  container.querySelectorAll("[data-sim-preset]").forEach((b) =>
+  container.querySelector("#simScrubRange")?.addEventListener("change", (e) => onSetRegion?.({ startCursor, endCursor, cursor: Number(e.target.value), resetWallet: true }));
+  container.querySelector("#simStartBarInp")?.addEventListener("change", (e) => {
+    const ns = Math.min(endCursor, Math.max(minCursor, Number(e.target.value || minCursor)));
+    onSetRegion?.({ startCursor: ns, endCursor, cursor: ns, resetWallet: true });
+  });
+  container.querySelector("#simEndBarInp")?.addEventListener("change", (e) => {
+    const ne = Math.min(total, Math.max(startCursor, Number(e.target.value || total)));
+    onSetRegion?.({ startCursor, endCursor: ne, cursor: Math.min(cursor, ne), resetWallet: false });
+  });
+  container.querySelectorAll("[data-sim-region]").forEach((b) =>
     b.addEventListener("click", () => {
-      const p = SIM_TIME_PRESETS.find((x) => x.id === b.dataset.simPreset);
-      if (p) onSelectPreset?.(p);
+      const [s, e] = b.dataset.simRegion.split(":").map(Number);
+      onSetRegion?.({ startCursor: s, endCursor: e, cursor: s, resetWallet: true });
     })
   );
+  container.querySelector("#simRandomBtn")?.addEventListener("click", () => onRandomStart?.());
+  container.querySelector("#simResetBtn")?.addEventListener("click", () => onResetSim?.());
   container.querySelector("#simPauseModeSel")?.addEventListener("change", (e) => onPauseModeChange?.(e.target.value));
   container.querySelectorAll("[data-fill-mode]").forEach((b) =>
     b.addEventListener("click", () => onFillModeChange?.(b.dataset.fillMode))
@@ -174,13 +205,15 @@ export function renderSimulatorRail(container, {
         return `<span class="signal-pill ${d.signal > 0.1 ? "bull" : d.signal < -0.1 ? "bear" : "flat"}">${esc(lbl)} ${d.contrib >= 0 ? "+" : ""}${d.contrib.toFixed(1)}</span>`;
       })
       .join("");
+    const isFlatNoShortSell = !isBuy && (!pos || pos.qty <= 0) && !sim.allowShort;
     const primaryLabel = isBuy
-      ? `Accept & Buy (${simState.sizePct}%)`
+      ? (pos && pos.qty > 0 ? `Add +${simState.sizePct}% to Long` : `Accept & Buy (${simState.sizePct}%)`)
       : pos && pos.qty > 0
       ? `Accept & Flatten Long`
       : sim.allowShort
       ? `Accept & Short (${simState.sizePct}%)`
-      : `Accept & Stay Flat`;
+      : `Stay Flat (Acknowledge)`;
+    const primaryBtnCls = isFlatNoShortSell ? "btn-ghost-sm" : `btn-trade ${isBuy ? "buy" : "sell"}`;
     promptHtml = `
       <div class="sim-prompt-card tone-${isBuy ? "buy" : "sell"}">
         <div class="sim-prompt-head">
@@ -194,7 +227,7 @@ export function renderSimulatorRail(container, {
         </div>
         ${driverChips ? `<div class="sim-driver-chips">${driverChips}</div>` : ""}
         <div class="sim-prompt-actions">
-          <button class="btn-trade ${isBuy ? "buy" : "sell"}" id="simPromptAcceptBtn">${primaryLabel}</button>
+          <button class="${primaryBtnCls}" id="simPromptAcceptBtn">${primaryLabel}</button>
           <button class="btn-ghost-sm" id="simPromptSkipBtn">Ignore &amp; Continue ▶</button>
         </div>
       </div>
@@ -250,7 +283,7 @@ export function renderSimulatorRail(container, {
       <div class="sim-score-tile">
         <span class="kpi-label">STRATEGY</span>
         <strong class="mono ${cleanZero(stats.shadowReturnPct) > 0 ? "pos" : cleanZero(stats.shadowReturnPct) < 0 ? "neg" : ""}">${fmtPct(stats.shadowReturnPct, 2, true)}</strong>
-        <span class="mono muted" style="font-size:10px">${plural(stats.shadowTrades, "trade")} · vs you ${fmtPct(stats.alphaVsStrategyPct, 1, true)}</span>
+        <span class="mono muted" style="font-size:10px">${stats.shadowOpen ? `1 open · ` : ""}${plural(stats.shadowTrades, "closed")} · vs you ${fmtPct(stats.alphaVsStrategyPct, 1, true)}</span>
       </div>
       <div class="sim-score-tile">
         <span class="kpi-label">BUY &amp; HOLD</span>

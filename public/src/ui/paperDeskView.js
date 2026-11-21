@@ -39,8 +39,9 @@ export function renderPaperDeskView(container, {
     .map((p) => {
       const px = priceMap[p.symbol] ?? p.lastPrice ?? p.avgPrice;
       const mv = p.qty * px;
-      const uPnl = (px - p.avgPrice) * p.qty;
-      const uPct = p.avgPrice > 0 ? ((px - p.avgPrice) / p.avgPrice) * 100 * Math.sign(p.qty) : 0;
+      const uPnl = portfolio.getPositionUnrealizedPnl(p, px);
+      const basis = Math.abs(p.avgPrice * p.qty) + (p.entryFeeRemaining || 0);
+      const uPct = basis > 0 ? (uPnl / basis) * 100 : 0;
       return `
         <tr>
           <td><strong>${p.symbol}</strong> <span class="signal-pill ${p.qty > 0 ? "bull" : "bear"}">${p.qty > 0 ? "LONG" : "SHORT"}</span></td>
@@ -60,10 +61,13 @@ export function renderPaperDeskView(container, {
       (o) => `
       <tr>
         <td><strong>${o.symbol}</strong></td>
-        <td><span class="signal-pill ${o.side === "buy" ? "bull" : "bear"}">${o.side.toUpperCase()} ${o.type.toUpperCase()}</span></td>
+        <td>
+          <span class="signal-pill ${o.side === "buy" ? "bull" : "bear"}">${o.side.toUpperCase()} ${o.type.toUpperCase()}</span>
+          ${o.role ? `<span class="cat-badge ${o.role === "sl" ? "cat-volatility" : "cat-trend"}" style="margin-left:4px">${o.role.toUpperCase()} · OCO</span>` : ""}
+        </td>
         <td class="mono">${o.qty}</td>
-        <td class="mono">$${o.limitPrice.toFixed(2)}</td>
-        <td><button class="btn-ghost-xs danger" data-cancel-ord="${o.id}">Cancel</button></td>
+        <td class="mono">$${o.limitPrice.toFixed(o.limitPrice < 1 ? 4 : 2)}</td>
+        <td><button class="btn-ghost-xs danger" data-cancel-ord="${o.id}">${o.ocoGroupId ? "Cancel OCO" : "Cancel"}</button></td>
       </tr>
     `
     )
@@ -157,7 +161,13 @@ export function renderPaperDeskView(container, {
         <div class="card">
           <div class="section-mini-head">
             <span>ORDER TICKET · ${symbol} ($${currentPrice.toFixed(2)})</span>
-            <button class="btn-ghost-xs" id="resetPaperBtn">Reset $100k</button>
+            <div style="display:flex;align-items:center;gap:10px">
+              <label class="inline-check" style="font-size:10.5px">
+                <input type="checkbox" id="paperAllowShortCb" ${st.allowShort ? "checked" : ""} />
+                <span>Allow Short</span>
+              </label>
+              <button class="btn-ghost-xs" id="resetPaperBtn">Reset $100k</button>
+            </div>
           </div>
           <div class="ticket-grid">
             <label>
@@ -322,6 +332,7 @@ export function renderPaperDeskView(container, {
   container.querySelector("#armConsensusBtn")?.addEventListener("click", () => onSelectTopStrategy?.("__consensus_equal__"));
   container.querySelector("#resetPaperBtn")?.addEventListener("click", () => onResetPortfolio?.());
   container.querySelector("#autoTradeCb")?.addEventListener("change", (e) => onToggleFlags?.({ autoTrade: e.target.checked }));
+  container.querySelector("#paperAllowShortCb")?.addEventListener("change", (e) => onToggleFlags?.({ allowShort: e.target.checked }));
   container.querySelector("#alpacaSyncCb")?.addEventListener("change", (e) => onToggleFlags?.({ alpacaSync: e.target.checked }));
   container.querySelectorAll("[data-flatten]").forEach((b) => b.addEventListener("click", () => onFlattenPosition?.(b.dataset.flatten)));
   container.querySelectorAll("[data-cancel-ord]").forEach((b) => b.addEventListener("click", () => onCancelPending?.(b.dataset.cancelOrd)));

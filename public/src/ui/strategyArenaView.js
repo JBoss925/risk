@@ -38,6 +38,10 @@ function drawSparkline(canvas, pts, w = 92, h = 26) {
 export function renderStrategyArenaView(container, {
   symbol,
   tournament,
+  benchmarks,
+  expandedBenchmarkIds,
+  benchFilterSym,
+  benchSort = "train",
   activeStrategyId,
   pinnedIds,
   arenaFilter,
@@ -46,6 +50,10 @@ export function renderStrategyArenaView(container, {
   onFilterChange,
   onSortChange,
   onSearchChange,
+  onToggleBenchmarkExpand,
+  onBenchFilterSymChange,
+  onBenchSortChange,
+  onLaunchBenchmarkRun,
   onSelectStrategy,
   onTogglePin,
   onOpenCreator,
@@ -111,8 +119,13 @@ export function renderStrategyArenaView(container, {
     return true;
   });
 
+  const benchByStrat = new Map((benchmarks?.strategies || []).map((b) => [b.strategyId, b]));
+  const expandedSet = expandedBenchmarkIds || new Set();
+
   const sorters = {
     quant: (a, b) => b.quantRankScore - a.quantRankScore,
+    global_bench: (a, b) => (benchByStrat.get(b.id)?.medianTrainSharpe ?? -9) - (benchByStrat.get(a.id)?.medianTrainSharpe ?? -9),
+    global_oos: (a, b) => (benchByStrat.get(b.id)?.oosHitRatePct ?? -1) - (benchByStrat.get(a.id)?.oosHitRatePct ?? -1),
     sharpe: (a, b) => b.metrics.sharpe - a.metrics.sharpe,
     oos: (a, b) => (b.metrics.oosSharpe ?? -9) - (a.metrics.oosSharpe ?? -9),
     return: (a, b) => b.metrics.totalReturnPct - a.metrics.totalReturnPct,
@@ -135,6 +148,84 @@ export function renderStrategyArenaView(container, {
       const isActive = s.id === activeStrategyId;
       const isPinned = pinnedIds.includes(s.id);
       const rankClass = s.rank === 1 ? "gold" : s.rank === 2 ? "silver" : s.rank === 3 ? "bronze" : "";
+      const bench = benchByStrat.get(s.id);
+      const isExpanded = expandedSet.has(s.id);
+
+      let drawerRowHtml = "";
+      if (isExpanded && bench?.runs?.length) {
+        const bf = (benchFilterSym || "").trim().toUpperCase();
+        let visibleRuns = bench.runs.filter((r) => !bf || r.symbol.includes(bf) || r.interval.toUpperCase().includes(bf) || r.profileLabel.toUpperCase().includes(bf));
+        visibleRuns = visibleRuns.slice().sort((a, b) => {
+          // Pin currently viewed ticker at top of drawer for instant relevance!
+          if (a.symbol === symbol && b.symbol !== symbol) return -1;
+          if (b.symbol === symbol && a.symbol !== symbol) return 1;
+          if (benchSort === "oos") return (b.metrics.oosSharpe ?? -9) - (a.metrics.oosSharpe ?? -9);
+          return b.trainQuality - a.trainQuality;
+        });
+        const subRows = visibleRuns
+          .map((r) => {
+            const showShortTag = r.settings.allowShort && !r.profileLabel.toLowerCase().includes("short");
+            const cfgSummary = `Buy≥${r.settings.buyThresh} / Sell≤${r.settings.sellThresh}${r.settings.stopLossPct ? ` · SL ${r.settings.stopLossPct}%/TP ${r.settings.takeProfitPct}%` : ""}${showShortTag ? " · Short" : ""}`;
+            const runIdx = bench.runs.indexOf(r);
+            const isCurSym = r.symbol === symbol;
+            return `
+              <tr class="bench-sub-row ${isCurSym ? "row-active" : ""}">
+                <td class="mono"><strong>${esc(r.symbol)}</strong>${isCurSym ? ` <span class="cat-badge cat-trend">ACTIVE</span>` : ""} <span class="muted">${r.interval}/${r.range}</span></td>
+                <td><span class="reason-tag">${esc(r.profileLabel)}</span> <span class="mono muted" style="font-size:10px;margin-left:4px">${cfgSummary}</span></td>
+                <td class="mono ${r.metrics.trainSharpe >= 0.5 ? "pos" : r.metrics.trainSharpe < 0 ? "neg" : ""}">${fmtFixed(r.metrics.trainSharpe, 2)} <span class="muted">(${r.metrics.trainTrades})</span></td>
+                <td class="mono ${r.metrics.oosReturnPct >= 0 ? "pos" : "neg"}">${fmtPct(r.metrics.oosReturnPct)} <span class="muted">SR ${fmtFixed(r.metrics.oosSharpe, 2)}</span></td>
+                <td class="mono neg">-${fmtFixed(r.metrics.maxDrawdownPct, 1)}%</td>
+                <td class="mono">${fmtFixed(r.metrics.winRatePct, 0)}% <span class="muted">(${r.metrics.numTrades})</span></td>
+                <td>
+                  <div class="row-actions">
+                    <button class="btn-primary-sm" style="padding:3px 7px;font-size:10px" data-launch-bench="${s.id}:${runIdx}:terminal" title="Open in live Terminal chart with exact benchmark settings">Chart →</button>
+                    <button class="btn-ghost-xs" style="border-color:rgba(56,189,248,0.45);color:#7dd3fc" data-launch-bench="${s.id}:${runIdx}:simulator" title="Launch in Paper Simulator starting at the 70% OOS boundary with exact settings">Simulate OOS →</button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+
+        drawerRowHtml = `
+          <tr class="bench-drawer-row">
+            <td colspan="10">
+              <div class="bench-drawer-box">
+                <div class="bench-drawer-head">
+                  <div>
+                    <strong>${esc(s.name)} — Cross-Market Blue-Chip &amp; Index Benchmarks</strong>
+                    <span class="mono muted-sm" style="margin-left:8px">Global #${bench.globalRank} · Med Train SR ${fmtFixed(bench.medianTrainSharpe, 2)} · Med OOS SR ${fmtFixed(bench.medianOosSharpe, 2)} · OOS Win% ${fmtFixed(bench.oosHitRatePct, 1)}% (${bench.totalRuns} tested)</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <div class="segmented" title="Sort drawer runs">
+                      <button data-bench-sort="train" class="${benchSort === "train" ? "active" : ""}">70% Train</button>
+                      <button data-bench-sort="oos" class="${benchSort === "oos" ? "active" : ""}">OOS Diag</button>
+                    </div>
+                    <input type="text" class="search-input sm bench-sym-filter" data-bench-filter="${s.id}" placeholder="Filter NVDA, V, INTC, SPY, 15m…" value="${esc(benchFilterSym || "")}" style="max-width:190px" />
+                  </div>
+                </div>
+                <div class="table-scroll" style="max-height:260px">
+                  <table class="data-table bench-sub-table">
+                    <thead>
+                      <tr>
+                        <th>Market / TF</th>
+                        <th>Exact Settings Tested</th>
+                        <th>70% Train SR (N)</th>
+                        <th>30% Held-Out OOS</th>
+                        <th>Max DD</th>
+                        <th>Win (N)</th>
+                        <th>Launch</th>
+                      </tr>
+                    </thead>
+                    <tbody>${subRows || `<tr><td colspan="7" class="muted" style="text-align:center;padding:12px">No runs match "${esc(bf)}"</td></tr>`}</tbody>
+                  </table>
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+      }
+
       return `
         <tr class="arena-row ${isActive ? "row-active" : ""}" data-row-open="${s.id}">
           <td><span class="rank-badge ${rankClass} mono">#${s.rank}</span></td>
@@ -146,6 +237,11 @@ export function renderStrategyArenaView(container, {
               <strong>${esc(s.name)}</strong>
               <span class="cat-badge cat-${s.family === "reversion" ? "momentum" : s.family === "multi" ? "trend" : s.family}">${esc(s.family)}</span>
               ${s.isCustom ? `<span class="cat-badge cat-custom">CUSTOM</span>` : ""}
+              ${
+                bench
+                  ? `<button class="bench-toggle-btn mono ${isExpanded ? "open" : ""}" data-toggle-bench="${s.id}" onclick="event.stopPropagation()" title="View exact tested settings & results across 26 blue-chips & indexes">${isExpanded ? "▾" : "▸"} ${bench.runs.length} Benchmarks · G#${bench.globalRank}</button>`
+                  : ""
+              }
             </div>
             <div class="strat-cell-desc">${esc(s.description)}</div>
           </td>
@@ -167,6 +263,7 @@ export function renderStrategyArenaView(container, {
           <td class="mono">${fmtFixed(m.winRatePct, 0)}% <span class="muted">(${m.numTrades})</span></td>
           <td onclick="event.stopPropagation()">
             <div class="row-actions">
+              <button class="btn-ghost-xs" style="border-color:rgba(56,189,248,0.45);color:#7dd3fc" data-act-strat="${s.id}:simulator" title="Practice live in Paper Simulator">Sim</button>
               <button class="btn-ghost-xs" data-act-strat="${s.id}:backtest" title="Backtest & Sweep">Test</button>
               <button class="btn-ghost-xs" data-act-strat="${s.id}:forecast" title="Forecast Lab">Forecast</button>
               <button class="btn-ghost-xs" data-act-strat="${s.id}:paper" title="Arm Paper Desk">Paper</button>
@@ -175,6 +272,7 @@ export function renderStrategyArenaView(container, {
             </div>
           </td>
         </tr>
+        ${drawerRowHtml}
       `;
     })
     .join("");
@@ -270,8 +368,10 @@ export function renderStrategyArenaView(container, {
             <label class="subpane-picker">
               <span class="muted-sm">Rank By</span>
               <select id="arenaSortSelect" class="mini-select">
-                <option value="quant" ${arenaSort === "quant" ? "selected" : ""}>Composite Rank (70% Train + Shrinkage)</option>
-                <option value="oos" ${arenaSort === "oos" ? "selected" : ""}>Held-Out 30% OOS Sharpe</option>
+                <option value="quant" ${arenaSort === "quant" ? "selected" : ""}>${symbol} Rank (70% Train + Shrinkage)</option>
+                <option value="global_bench" ${arenaSort === "global_bench" ? "selected" : ""}>Cross-Market Benchmark Rank (26 Blue-Chips)</option>
+                <option value="global_oos" ${arenaSort === "global_oos" ? "selected" : ""}>Cross-Market OOS Hit % (Diagnostic)</option>
+                <option value="oos" ${arenaSort === "oos" ? "selected" : ""}>Held-Out 30% OOS Sharpe (${symbol} · Diagnostic)</option>
                 <option value="sharpe" ${arenaSort === "sharpe" ? "selected" : ""}>Full-Sample Sharpe (IS)</option>
                 <option value="return" ${arenaSort === "return" ? "selected" : ""}>Total Return % (IS)</option>
                 <option value="alpha" ${arenaSort === "alpha" ? "selected" : ""}>Alpha vs Buy & Hold</option>
@@ -284,7 +384,7 @@ export function renderStrategyArenaView(container, {
         </div>
 
         <div class="muted-sm" style="margin-bottom:10px">
-          <strong>Click any row</strong> to load on Terminal Chart · Pin up to 5 strategies for side-by-side comparison (${pinnedIds.length}/5 pinned). Default ranking uses strictly the 70% Train slice with Bayesian shrinkage so the final 30% OOS column stays genuinely held-out.
+          <strong>Click any row</strong> to chart · Click <strong>▸ Benchmarks</strong> under any strategy to inspect exact verified settings across ${benchmarks ? `${benchmarks.totalBacktests.toLocaleString()} WASM runs on ${benchmarks.tickersTested.length} blue-chips &amp; indexes (NVDA, TSLA, GOOG, V, INTC, SPY, QQQ, DIA…)` : "26 blue-chips & indexes"} and 1-click launch into <strong>Chart</strong> or <strong>Simulator</strong>.
         </div>
 
         <div class="table-scroll" style="max-height:520px">
@@ -330,6 +430,23 @@ export function renderStrategyArenaView(container, {
   );
   container.querySelectorAll("[data-clone-strat]").forEach((btn) => btn.addEventListener("click", () => onCloneStrategy?.(btn.dataset.cloneStrat)));
   container.querySelectorAll("[data-del-strat]").forEach((btn) => btn.addEventListener("click", () => onDeleteCustomStrategy?.(btn.dataset.delStrat)));
+  container.querySelectorAll("[data-toggle-bench]").forEach((btn) =>
+    btn.addEventListener("click", () => onToggleBenchmarkExpand?.(btn.dataset.toggleBench))
+  );
+  container.querySelectorAll("[data-bench-filter]").forEach((inp) =>
+    inp.addEventListener("input", (e) => onBenchFilterSymChange?.(e.target.value, inp.dataset.benchFilter))
+  );
+  container.querySelectorAll("[data-bench-sort]").forEach((btn) =>
+    btn.addEventListener("click", () => onBenchSortChange?.(btn.dataset.benchSort))
+  );
+  container.querySelectorAll("[data-launch-bench]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const [stratId, runIdxStr, targetView] = btn.dataset.launchBench.split(":");
+      const b = benchByStrat.get(stratId);
+      const run = b?.runs?.[Number(runIdxStr)];
+      if (run) onLaunchBenchmarkRun?.(stratId, run, targetView);
+    })
+  );
 
   const byId = new Map(all.map((s) => [s.id, s]));
   requestAnimationFrame(() => {

@@ -21,11 +21,13 @@ export const SIM_TIME_PRESETS = [
 ];
 
 export class SimSession {
-  constructor({ startingCash = 100000, feeBps = 1, slippageBps = 2, allowShort = false } = {}) {
+  constructor({ startingCash = 100000, feeBps = 1, slippageBps = 2, allowShort = false, shadowStopLossPct = 0, shadowTakeProfitPct = 0 } = {}) {
     this.startingCash = startingCash;
     this.feeBps = feeBps;
     this.slippageBps = slippageBps;
     this.allowShort = allowShort;
+    this.shadowStopLossPct = shadowStopLossPct;
+    this.shadowTakeProfitPct = shadowTakeProfitPct;
     this.pauseMode = "signal_change";
     this.fillMode = "close"; // 'close' (instant) | 'next_open' (queue for next bar open)
     this.reset(startingCash);
@@ -100,6 +102,7 @@ export class SimSession {
       shadowEquity,
       shadowReturnPct,
       shadowTrades: this.shadow.trades,
+      shadowOpen: Math.abs(this.shadow.qty) > 1e-8,
       bhReturnPct,
       alphaVsStrategyPct: totalReturnPct - shadowReturnPct,
       alphaVsBhPct: totalReturnPct - bhReturnPct,
@@ -281,19 +284,21 @@ export class SimSession {
       }
     }
 
-    // 3. Shadow mechanical strategy fills at bar.o (mirrors WASM backtester)
+    // 3. Shadow mechanical strategy: execute queued next-bar-open signal FIRST (supports both Long & Short!),
+    //    then check intrabar SL/TP brackets against bar.h/bar.l (including on the entry bar itself, matching WASM runBacktest!)
+    const slip = this.slippageBps / 10000;
+    const feeRate = this.feeBps / 10000;
+
     if (this.shadow.pendingSide) {
       const side = this.shadow.pendingSide;
       this.shadow.pendingSide = null;
-      const slip = this.slippageBps / 10000;
-      const feeRate = this.feeBps / 10000;
       const fillPx = side === "buy" ? bar.o * (1 + slip) : bar.o * (1 - slip);
       if (side === "buy" && this.shadow.qty <= 0) {
         if (this.shadow.qty < 0) {
-          // Close short first
           const coverNotional = Math.abs(this.shadow.qty) * fillPx;
           this.shadow.cash -= coverNotional + coverNotional * feeRate;
           this.shadow.qty = 0;
+          this.shadow.avgPrice = 0;
           this.shadow.trades++;
         }
         const avail = Math.max(0, this.shadow.cash);
@@ -304,10 +309,44 @@ export class SimSession {
           this.shadow.avgPrice = fillPx;
           this.shadow.cash = 0;
         }
-      } else if (side === "sell" && this.shadow.qty > 0) {
-        const proceeds = this.shadow.qty * fillPx;
-        const fee = proceeds * feeRate;
-        this.shadow.cash += proceeds - fee;
+      } else if (side === "sell" && this.shadow.qty >= 0) {
+        if (this.shadow.qty > 0) {
+          const proceeds = this.shadow.qty * fillPx;
+          this.shadow.cash += proceeds - proceeds * feeRate;
+          this.shadow.qty = 0;
+          this.shadow.avgPrice = 0;
+          this.shadow.trades++;
+        }
+        if (this.allowShort && this.shadow.cash > 0 && fillPx > 0) {
+          const avail = this.shadow.cash;
+          const fee = avail * feeRate;
+          const netCap = Math.max(0, avail - fee);
+          const shQty = netCap / fillPx;
+          this.shadow.qty = -shQty;
+          this.shadow.avgPrice = fillPx;
+          this.shadow.cash = avail + shQty * fillPx - fee;
+        }
+      }
+    }
+
+    if (Math.abs(this.shadow.qty) > 1e-8 && (this.shadowStopLossPct > 0 || this.shadowTakeProfitPct > 0)) {
+      const isLong = this.shadow.qty > 0;
+      const slPx = this.shadowStopLossPct > 0
+        ? (isLong ? this.shadow.avgPrice * (1 - this.shadowStopLossPct / 100) : this.shadow.avgPrice * (1 + this.shadowStopLossPct / 100))
+        : null;
+      const tpPx = this.shadowTakeProfitPct > 0
+        ? (isLong ? this.shadow.avgPrice * (1 + this.shadowTakeProfitPct / 100) : this.shadow.avgPrice * (1 - this.shadowTakeProfitPct / 100))
+        : null;
+      const hitSL = slPx != null && (isLong ? bar.l <= slPx : bar.h >= slPx);
+      const hitTP = tpPx != null && (isLong ? bar.h >= tpPx : bar.l <= tpPx);
+      if (hitSL || hitTP) {
+        const rawTrigger = hitSL ? slPx : tpPx;
+        const fillPx = isLong
+          ? (hitSL ? Math.min(rawTrigger, bar.o) : Math.max(rawTrigger, bar.o)) * (1 - slip)
+          : (hitSL ? Math.max(rawTrigger, bar.o) : Math.min(rawTrigger, bar.o)) * (1 + slip);
+        const notional = Math.abs(this.shadow.qty) * fillPx;
+        if (isLong) this.shadow.cash += notional - notional * feeRate;
+        else this.shadow.cash -= notional + notional * feeRate;
         this.shadow.qty = 0;
         this.shadow.avgPrice = 0;
         this.shadow.trades++;
@@ -323,9 +362,9 @@ export class SimSession {
     const th = { ...DEFAULT_THRESHOLDS, ...(thresholds || {}) };
     const rating = classifyScore(score, th);
 
-    // Queue mechanical shadow strategy for next bar's Open
+    // Queue mechanical shadow strategy for next bar's Open (supports both Long & Short!)
     if (score >= th.buy && this.shadow.qty <= 0) this.shadow.pendingSide = "buy";
-    else if (score <= th.sell && this.shadow.qty > 0) this.shadow.pendingSide = "sell";
+    else if (score <= th.sell && (this.shadow.qty > 0 || (this.allowShort && this.shadow.qty === 0))) this.shadow.pendingSide = "sell";
 
     // Compute causal consensus at this bar
     const cons = tournamentStrategies?.length ? computeConsensusSummary(tournamentStrategies, barIdx) : null;
