@@ -211,6 +211,7 @@ export function renderLiveTradePopup(container, {
 
   // If no active signal popup is shown, render a sleek live Open Position quick-manage pill when holding this symbol!
   if (!visible || !rec) {
+    container.dataset.popupKey = "";
     if (openPosition && Math.abs(openPosition.qty) > 1e-8) {
       const uPnl = openPosition.unrealizedPnl ?? (markPrice - openPosition.avgPrice) * openPosition.qty;
       const isLong = openPosition.qty > 0;
@@ -236,6 +237,7 @@ export function renderLiveTradePopup(container, {
   const toneCls = isBull ? "tone-buy" : "tone-sell";
 
   if (minimized) {
+    container.dataset.popupKey = "";
     container.innerHTML = `
       <button class="chart-popup-pill ${toneCls}" id="chartPopupExpandBtn" title="Open Live Trade Recommendation">
         <span class="dot-live"></span>
@@ -266,8 +268,11 @@ export function renderLiveTradePopup(container, {
       ? `✓ Short ${rec.shares} sh + SL/TP`
       : `✓ Stay Flat (Acknowledge)`;
 
+  const isNewPopup = container.dataset.popupKey !== rec.signalKey;
+  container.dataset.popupKey = rec.signalKey;
+
   container.innerHTML = `
-    <div class="chart-live-popup ${toneCls}">
+    <div class="chart-live-popup ${toneCls}${isNewPopup ? " is-entering" : ""}">
       <div class="clp-head">
         <div class="clp-kicker nowrap">
           <span class="dot-live"></span>
@@ -323,6 +328,9 @@ export function renderLiveTradePopup(container, {
       </div>
     </div>
   `;
+
+  const popupEl = container.querySelector(".chart-live-popup.is-entering");
+  popupEl?.addEventListener("animationend", () => popupEl.classList.remove("is-entering"), { once: true });
 
   container.querySelector("#clpMinBtn")?.addEventListener("click", () => onToggleMinimize?.(true));
   container.querySelector("#clpCloseBtn")?.addEventListener("click", () => onDecline?.(rec));

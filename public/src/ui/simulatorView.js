@@ -153,6 +153,7 @@ export function renderSimulatorDeck(container, {
 }
 
 export function renderSimulatorRail(container, {
+  hoverOnly = false,
   symbol,
   interval,
   activeStrategyName,
@@ -185,6 +186,24 @@ export function renderSimulatorRail(container, {
     return;
   }
 
+  // Ensure stable persistent sub-slots so hovering across chart bars ONLY updates the
+  // indicator attribution pane and NEVER remounts or re-animates the Co-Pilot prompt or trade pad!
+  let promptSlot = container.querySelector("#simPromptSlot");
+  let controlsSlot = container.querySelector("#simControlsSlot");
+  let tabBodySlot = container.querySelector("#simTabBodySlot");
+  const isFreshMount = !promptSlot || !controlsSlot || !tabBodySlot;
+  if (isFreshMount) {
+    container.innerHTML = `<div id="simPromptSlot"></div><div id="simControlsSlot"></div><div id="simTabBodySlot"></div>`;
+    promptSlot = container.querySelector("#simPromptSlot");
+    controlsSlot = container.querySelector("#simControlsSlot");
+    tabBodySlot = container.querySelector("#simTabBodySlot");
+  }
+
+  // Fast hover-only path: when hovering bars on the chart, skip touching the prompt & trade pad completely!
+  if (hoverOnly && !isFreshMount && simState.railTab !== "indicators") {
+    return;
+  }
+
   const idx = activeIdx >= 0 && activeIdx < n ? activeIdx : n - 1;
   const curBar = bars[n - 1];
   const markPx = curBar.c;
@@ -194,44 +213,63 @@ export function renderSimulatorRail(container, {
   const pos = sim.position;
   const prompt = simState.activePrompt;
 
-  // 1. Illuminated Co-Pilot Prompt Card (when paused on a signal!)
-  let promptHtml = "";
-  if (prompt) {
-    const isBuy = prompt.kind === "buy";
-    const driverChips = (prompt.drivers || [])
-      .map((d) => {
-        const meta = INDICATOR_BY_ID.get(rules.find((r) => r.key === d.key)?.indicatorId);
-        const lbl = meta?.shortName || d.key.toUpperCase();
-        return `<span class="signal-pill ${d.signal > 0.1 ? "bull" : d.signal < -0.1 ? "bear" : "flat"}">${esc(lbl)} ${d.contrib >= 0 ? "+" : ""}${d.contrib.toFixed(1)}</span>`;
-      })
-      .join("");
-    const isFlatNoShortSell = !isBuy && (!pos || pos.qty <= 0) && !sim.allowShort;
-    const primaryLabel = isBuy
-      ? (pos && pos.qty > 0 ? `Add +${simState.sizePct}% to Long` : `Accept & Buy (${simState.sizePct}%)`)
-      : pos && pos.qty > 0
-      ? `Accept & Flatten Long`
-      : sim.allowShort
-      ? `Accept & Short (${simState.sizePct}%)`
-      : `Stay Flat (Acknowledge)`;
-    const primaryBtnCls = isFlatNoShortSell ? "btn-ghost-sm" : `btn-trade ${isBuy ? "buy" : "sell"}`;
-    promptHtml = `
-      <div class="sim-prompt-card tone-${isBuy ? "buy" : "sell"}">
-        <div class="sim-prompt-head">
-          <span class="sim-prompt-badge">⏸ CO-PILOT PROMPT · BAR ${prompt.barIdx + 1}</span>
-          <button class="icon-btn" id="simPromptDismissBtn" title="Dismiss prompt and stay paused">✕</button>
-        </div>
-        <div class="sim-prompt-title">${esc(prompt.headline)}</div>
-        <div class="muted-sm" style="margin-bottom:8px">
-          ${esc(prompt.detail)} at <strong class="mono">$${prompt.price.toFixed(2)}</strong>
-          ${prompt.consensus ? ` · Consensus <strong class="mono">${prompt.consensus.agreePct}%</strong> (${prompt.consensus.bulls}▲/${prompt.consensus.bears}▼)` : ""}
-        </div>
-        ${driverChips ? `<div class="sim-driver-chips">${driverChips}</div>` : ""}
-        <div class="sim-prompt-actions">
-          <button class="${primaryBtnCls}" id="simPromptAcceptBtn">${primaryLabel}</button>
-          <button class="btn-ghost-sm" id="simPromptSkipBtn">Ignore &amp; Continue ▶</button>
-        </div>
-      </div>
-    `;
+  // 1. Illuminated Co-Pilot Prompt Card (stable across chart hover; animates ONLY on brand-new prompts!)
+  if (!hoverOnly || isFreshMount) {
+    const promptId = prompt ? `${prompt.barIdx}|${prompt.kind}|${prompt.headline}` : "";
+    const prevPromptId = promptSlot.dataset.promptId || "";
+    const isBuy = prompt?.kind === "buy";
+    const isFlatNoShortSell = prompt && !isBuy && (!pos || pos.qty <= 0) && !sim.allowShort;
+    const primaryLabel = prompt
+      ? isBuy
+        ? (pos && pos.qty > 0 ? `Add +${simState.sizePct}% to Long` : `Accept & Buy (${simState.sizePct}%)`)
+        : pos && pos.qty > 0
+        ? `Accept & Flatten Long`
+        : sim.allowShort
+        ? `Accept & Short (${simState.sizePct}%)`
+        : `Stay Flat (Acknowledge)`
+      : "";
+    const promptRenderKey = prompt ? `${promptId}|${primaryLabel}|${sim.allowShort}` : "";
+
+    if (promptRenderKey !== (promptSlot.dataset.renderKey || "")) {
+      promptSlot.dataset.renderKey = promptRenderKey;
+      promptSlot.dataset.promptId = promptId;
+      if (!prompt) {
+        promptSlot.innerHTML = "";
+      } else {
+        const driverChips = (prompt.drivers || [])
+          .map((d) => {
+            const meta = INDICATOR_BY_ID.get(rules.find((r) => r.key === d.key)?.indicatorId);
+            const lbl = meta?.shortName || d.key.toUpperCase();
+            return `<span class="signal-pill ${d.signal > 0.1 ? "bull" : d.signal < -0.1 ? "bear" : "flat"}">${esc(lbl)} ${d.contrib >= 0 ? "+" : ""}${d.contrib.toFixed(1)}</span>`;
+          })
+          .join("");
+        const primaryBtnCls = isFlatNoShortSell ? "btn-ghost-sm" : `btn-trade ${isBuy ? "buy" : "sell"}`;
+        const enterCls = promptId !== prevPromptId ? " is-entering" : "";
+        promptSlot.innerHTML = `
+          <div class="sim-prompt-card tone-${isBuy ? "buy" : "sell"}${enterCls}">
+            <div class="sim-prompt-head">
+              <span class="sim-prompt-badge">⏸ CO-PILOT PROMPT · BAR ${prompt.barIdx + 1}</span>
+              <button class="icon-btn" id="simPromptDismissBtn" title="Dismiss prompt and stay paused">✕</button>
+            </div>
+            <div class="sim-prompt-title">${esc(prompt.headline)}</div>
+            <div class="muted-sm" style="margin-bottom:8px">
+              ${esc(prompt.detail)} at <strong class="mono">$${prompt.price.toFixed(2)}</strong>
+              ${prompt.consensus ? ` · Consensus <strong class="mono">${prompt.consensus.agreePct}%</strong> (${prompt.consensus.bulls}▲/${prompt.consensus.bears}▼)` : ""}
+            </div>
+            ${driverChips ? `<div class="sim-driver-chips">${driverChips}</div>` : ""}
+            <div class="sim-prompt-actions">
+              <button class="${primaryBtnCls}" id="simPromptAcceptBtn">${primaryLabel}</button>
+              <button class="btn-ghost-sm" id="simPromptSkipBtn">Ignore &amp; Continue ▶</button>
+            </div>
+          </div>
+        `;
+        promptSlot.querySelector("#simPromptAcceptBtn")?.addEventListener("click", () => onPromptAccept?.());
+        promptSlot.querySelector("#simPromptSkipBtn")?.addEventListener("click", () => onPromptSkip?.());
+        promptSlot.querySelector("#simPromptDismissBtn")?.addEventListener("click", () => onPromptDismiss?.());
+        const cardEl = promptSlot.querySelector(".sim-prompt-card.is-entering");
+        cardEl?.addEventListener("animationend", () => cardEl.classList.remove("is-entering"), { once: true });
+      }
+    }
   }
 
   // 2. Manual Discretionary Trade Pad
@@ -453,66 +491,64 @@ export function renderSimulatorRail(container, {
     `;
   }
 
-  container.innerHTML = `
-    ${promptHtml}
-    <div class="card sim-trade-pad">
-      <div class="section-mini-head" style="margin-bottom:7px">
-        <span>DISCRETIONARY TRADE PAD · ${esc(symbol)}</span>
-        <span class="mono" style="color:#f8fafc">$${markPx.toFixed(2)}</span>
+  if (!hoverOnly || isFreshMount) {
+    controlsSlot.innerHTML = `
+      <div class="card sim-trade-pad">
+        <div class="section-mini-head" style="margin-bottom:7px">
+          <span>DISCRETIONARY TRADE PAD · ${esc(symbol)}</span>
+          <span class="mono" style="color:#f8fafc">$${markPx.toFixed(2)}</span>
+        </div>
+        ${posHtml}
+        ${pendingHtml}
+        <div class="sim-size-row">
+          <span class="bar-tag">SIZE</span>
+          <div class="cat-pills">${sizePills}</div>
+          <label class="inline-check" style="margin-left:auto;font-size:10.5px">
+            <input type="checkbox" id="simAllowShortCb" ${sim.allowShort ? "checked" : ""} />
+            <span>Short</span>
+          </label>
+        </div>
+        <div class="sim-bracket-row">
+          <label><span>Stop-Loss %</span><input type="number" id="simSlInput" class="mono" placeholder="Off" min="0" max="50" step="0.5" value="${simState.stopLossPct || ""}" /></label>
+          <label><span>Take-Profit %</span><input type="number" id="simTpInput" class="mono" placeholder="Off" min="0" max="200" step="0.5" value="${simState.takeProfitPct || ""}" /></label>
+        </div>
+        <div class="sim-trade-btns">
+          <button class="btn-trade buy" id="simBuyBtn">Buy ${simState.sizePct}%</button>
+          <button class="btn-trade sell" id="simSellBtn">${pos && pos.qty > 0 && !sim.allowShort ? `Sell ${simState.sizePct}%` : sim.allowShort ? `Sell/Short ${simState.sizePct}%` : `Sell`}</button>
+          <button class="btn-ghost-sm" id="simFlattenBtn" ${!pos ? "disabled style=\"opacity:0.45\"" : ""}>Flatten</button>
+        </div>
       </div>
-      ${posHtml}
-      ${pendingHtml}
-      <div class="sim-size-row">
-        <span class="bar-tag">SIZE</span>
-        <div class="cat-pills">${sizePills}</div>
-        <label class="inline-check" style="margin-left:auto;font-size:10.5px">
-          <input type="checkbox" id="simAllowShortCb" ${sim.allowShort ? "checked" : ""} />
-          <span>Short</span>
-        </label>
+
+      ${scoreboardHtml}
+
+      <div class="rail-tabs sim-rail-tabs">
+        <button class="rail-tab ${simState.railTab === "indicators" ? "active" : ""}" data-sim-tab="indicators">Indicators (${isEnsembleMode ? 24 : rules.filter((r) => r.enabled).length})</button>
+        <button class="rail-tab ${simState.railTab === "journal" ? "active" : ""}" data-sim-tab="journal">Journal (${sim.fills.length})</button>
+        <button class="rail-tab ${simState.railTab === "edit" ? "active" : ""}" data-sim-tab="edit">Edit Rules</button>
       </div>
-      <div class="sim-bracket-row">
-        <label><span>Stop-Loss %</span><input type="number" id="simSlInput" class="mono" placeholder="Off" min="0" max="50" step="0.5" value="${simState.stopLossPct || ""}" /></label>
-        <label><span>Take-Profit %</span><input type="number" id="simTpInput" class="mono" placeholder="Off" min="0" max="200" step="0.5" value="${simState.takeProfitPct || ""}" /></label>
-      </div>
-      <div class="sim-trade-btns">
-        <button class="btn-trade buy" id="simBuyBtn">Buy ${simState.sizePct}%</button>
-        <button class="btn-trade sell" id="simSellBtn">${pos && pos.qty > 0 && !sim.allowShort ? `Sell ${simState.sizePct}%` : sim.allowShort ? `Sell/Short ${simState.sizePct}%` : `Sell`}</button>
-        <button class="btn-ghost-sm" id="simFlattenBtn" ${!pos ? "disabled style=\"opacity:0.45\"" : ""}>Flatten</button>
-      </div>
-    </div>
+    `;
 
-    ${scoreboardHtml}
+    controlsSlot.querySelector("#simBuyBtn")?.addEventListener("click", () => onUserTrade?.("buy"));
+    controlsSlot.querySelector("#simSellBtn")?.addEventListener("click", () => onUserTrade?.("sell"));
+    controlsSlot.querySelector("#simFlattenBtn")?.addEventListener("click", () => onUserTrade?.("flatten"));
+    controlsSlot.querySelector("#simCancelPendingBtn")?.addEventListener("click", () => onCancelPending?.());
+    controlsSlot.querySelectorAll("[data-sim-size]").forEach((b) =>
+      b.addEventListener("click", () => onChangeSizePct?.(Number(b.dataset.simSize)))
+    );
+    controlsSlot.querySelector("#simSlInput")?.addEventListener("change", (e) =>
+      onUpdateBracket?.({ stopLossPct: Math.max(0, Number(e.target.value || 0)) })
+    );
+    controlsSlot.querySelector("#simTpInput")?.addEventListener("change", (e) =>
+      onUpdateBracket?.({ takeProfitPct: Math.max(0, Number(e.target.value || 0)) })
+    );
+    controlsSlot.querySelector("#simAllowShortCb")?.addEventListener("change", (e) => onToggleAllowShort?.(e.target.checked));
+    controlsSlot.querySelectorAll("[data-sim-tab]").forEach((b) =>
+      b.addEventListener("click", () => onChangeRailTab?.(b.dataset.simTab))
+    );
+  }
 
-    <div class="rail-tabs sim-rail-tabs">
-      <button class="rail-tab ${simState.railTab === "indicators" ? "active" : ""}" data-sim-tab="indicators">Indicators (${isEnsembleMode ? 24 : rules.filter((r) => r.enabled).length})</button>
-      <button class="rail-tab ${simState.railTab === "journal" ? "active" : ""}" data-sim-tab="journal">Journal (${sim.fills.length})</button>
-      <button class="rail-tab ${simState.railTab === "edit" ? "active" : ""}" data-sim-tab="edit">Edit Rules</button>
-    </div>
-
-    ${tabBodyHtml}
-  `;
-
-  container.querySelector("#simPromptAcceptBtn")?.addEventListener("click", () => onPromptAccept?.());
-  container.querySelector("#simPromptSkipBtn")?.addEventListener("click", () => onPromptSkip?.());
-  container.querySelector("#simPromptDismissBtn")?.addEventListener("click", () => onPromptDismiss?.());
-  container.querySelector("#simBuyBtn")?.addEventListener("click", () => onUserTrade?.("buy"));
-  container.querySelector("#simSellBtn")?.addEventListener("click", () => onUserTrade?.("sell"));
-  container.querySelector("#simFlattenBtn")?.addEventListener("click", () => onUserTrade?.("flatten"));
-  container.querySelector("#simCancelPendingBtn")?.addEventListener("click", () => onCancelPending?.());
-  container.querySelectorAll("[data-sim-size]").forEach((b) =>
-    b.addEventListener("click", () => onChangeSizePct?.(Number(b.dataset.simSize)))
-  );
-  container.querySelector("#simSlInput")?.addEventListener("change", (e) =>
-    onUpdateBracket?.({ stopLossPct: Math.max(0, Number(e.target.value || 0)) })
-  );
-  container.querySelector("#simTpInput")?.addEventListener("change", (e) =>
-    onUpdateBracket?.({ takeProfitPct: Math.max(0, Number(e.target.value || 0)) })
-  );
-  container.querySelector("#simAllowShortCb")?.addEventListener("change", (e) => onToggleAllowShort?.(e.target.checked));
-  container.querySelectorAll("[data-sim-tab]").forEach((b) =>
-    b.addEventListener("click", () => onChangeRailTab?.(b.dataset.simTab))
-  );
-  container.querySelectorAll("[data-sim-pick-strat]").forEach((el) =>
+  tabBodySlot.innerHTML = tabBodyHtml;
+  tabBodySlot.querySelectorAll("[data-sim-pick-strat]").forEach((el) =>
     el.addEventListener("click", () => onSwitchStrategy?.(el.dataset.simPickStrat))
   );
 }

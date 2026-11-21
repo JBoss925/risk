@@ -180,7 +180,7 @@ const chart = new QuantChartCanvas($("mainChartCanvas"), {
 const simChart = new QuantChartCanvas($("simChartCanvas"), {
   onHoverBar: (idx) => {
     state.sim.hoverIdx = idx;
-    renderSimRailOnly();
+    renderSimRailOnly({ hoverOnly: true });
   },
   onSelectStrategy: (id) => {
     selectStrategy(id);
@@ -1543,8 +1543,9 @@ function renderSimDeckOnly() {
   });
 }
 
-function renderSimRailOnly() {
+function renderSimRailOnly({ hoverOnly = false } = {}) {
   renderSimulatorRail($("simRailContainer"), {
+    hoverOnly,
     symbol: state.symbol,
     interval: state.interval,
     activeStrategyName: state.activeStrategyName,
