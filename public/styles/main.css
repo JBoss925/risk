@@ -181,15 +181,15 @@ html, body {
   top: 90px;
   left: 14px;
   width: min(460px, calc(100vw - 28px));
-  max-height: 70vh;
+  max-height: min(70vh, calc(100vh - 140px));
   background: #121724;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
-  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.72);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.78);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  z-index: 95;
+  z-index: 150;
 }
 .sw-head { padding: 10px; border-bottom: 1px solid var(--border); }
 .sw-head input { width: 100%; }

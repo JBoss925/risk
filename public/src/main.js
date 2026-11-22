@@ -340,6 +340,12 @@ function renderSwitcherPopover() {
 
 function openSwitcherPopover() {
   switcherQuery = "";
+  const rect = strategySwitcherBtn?.getBoundingClientRect();
+  if (rect && rect.bottom > 0) {
+    const topPx = Math.round(rect.bottom + 6);
+    strategySwitcherPopover.style.top = `${topPx}px`;
+    strategySwitcherPopover.style.maxHeight = `${Math.max(220, window.innerHeight - topPx - 68)}px`;
+  }
   strategySwitcherPopover.classList.remove("hidden");
   renderSwitcherPopover();
 }
